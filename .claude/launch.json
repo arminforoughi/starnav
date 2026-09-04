@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "starnav", "runtimeExecutable": "python3", "runtimeArgs": ["server.py", "8000", "--lan"], "port": 8000 },
+    { "name": "static", "runtimeExecutable": "python3", "runtimeArgs": ["-m", "http.server", "8090", "-d", "docs"], "port": 8090 }
+  ]
+}

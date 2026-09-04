@@ -1,0 +1,22 @@
+name: Update planet positions
+on:
+  schedule:
+    - cron: "17 3 * * *"      # daily, 03:17 UTC
+  workflow_dispatch:
+jobs:
+  planets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python3 fetch_planets.py
+      - name: Commit if changed
+        run: |
+          git config user.name "starnav-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/planets.json
+          git diff --cached --quiet || git commit -m "Update planet positions from JPL Horizons"
+          git push
