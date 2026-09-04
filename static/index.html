@@ -467,7 +467,7 @@ function pick(mx, my) {
   return best;
 }
 function setCenter(id) { centerId = id; $('center').value = id; draw(); }
-function setWidthAU(au) { scale = W / au; draw(); }
+function setWidthAU(au) { if (!W) resize(); scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, (W || 1280) / au)); draw(); }
 const FACTS = {
   sun:     { blurb: 'Our star: a middle-aged yellow dwarf holding 99.8% of the solar system\'s mass.', mass: '333,000 Earths', day: '25 days (equator)', year: '230 million years around the galaxy', temp: '5,500 °C surface', moons: '8 planets', age: '4.6 billion years' },
   mercury: { blurb: 'Smallest planet, closest to the Sun, with a cratered airless surface.', mass: '0.055 Earths', day: '59 days', year: '88 days', temp: '-173 to 427 °C', moons: '0' },
