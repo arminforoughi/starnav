@@ -32,6 +32,7 @@ HORIZONS = "https://ssd.jpl.nasa.gov/api/horizons.api"
 HYG_URL = ("https://raw.githubusercontent.com/astronexus/HYG-Database/"
            "main/hyg/CURRENT/hygdata_v40.csv.gz")
 STAR_MAG_LIMIT = float(os.environ.get("STARNAV_MAG_LIMIT", "6.5"))   # 6.5 = naked-eye limit, ~9,000 stars
+STAR_NEAR_PC = float(os.environ.get("STARNAV_NEAR_PC", "100"))       # plus every catalog star within 100 pc (~25,000)
 
 AU_PER_PC = 206264.806
 OBLIQUITY = math.radians(23.4392911)   # J2000 mean obliquity
@@ -399,9 +400,11 @@ def download_hyg():
     rows = []
     for r in csv.DictReader(text):
         mag, dist = fnum(r.get("mag")), fnum(r.get("dist"))
-        if mag is None or mag > STAR_MAG_LIMIT or r.get("id") == "0":
+        if mag is None or r.get("id") == "0":
             continue
         if dist is None or dist <= 0 or dist >= 100000:   # 100000 = unknown in HYG
+            continue
+        if mag > STAR_MAG_LIMIT and dist > STAR_NEAR_PC:   # keep naked-eye stars anywhere + all neighbours
             continue
         x, y, z = eq_to_ecl(float(r["x"]), float(r["y"]), float(r["z"]))
         rows.append((f"hyg-{r['id']}", star_name(r), "star", x * AU_PER_PC, y * AU_PER_PC,

@@ -4,8 +4,9 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
 
 - **Planets, Moon, Pluto**: live positions from the open [NASA/JPL Horizons API](https://ssd-api.jpl.nasa.gov/doc/horizons.html)
   (heliocentric ecliptic J2000, in AU) for any date you pick.
-- **Stars**: ~9,000 naked-eye stars (mag ≤ 6.5) from the open [HYG database](https://github.com/astronexus/HYG-Database)
-  (CC BY-SA 4.0), downloaded once and cached. Set `STARNAV_MAG_LIMIT` (e.g. `8`) for more.
+- **Stars**: ~30,000 stars from the open [HYG database](https://github.com/astronexus/HYG-Database) (CC BY-SA 4.0):
+  every naked-eye star (mag ≤ 6.5) plus every catalogued star within 100 pc, downloaded once and cached.
+  Tune with `STARNAV_MAG_LIMIT` and `STARNAV_NEAR_PC`.
   A small built-in list is used if the download fails.
 - **Galaxies**: ~870 galaxies within 36 Mly with measured distances (Local Volume catalog,
   Karachentsev+ 2013) and ~43,000 galaxies out to ~1 Gly from the 2MASS Redshift Survey

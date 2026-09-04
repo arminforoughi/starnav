@@ -337,7 +337,7 @@ function draw() {
     const [sx, sy, d] = proj(n);
     if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
     if (isStar || isCat) {
-      const r = isStar ? Math.max(0.7, Math.min(6, 4.2 - n.mag * 0.75))
+      const r = isStar ? Math.max(1.0, Math.min(6, 4.2 - n.mag * 0.75))
                        : Math.max(0.8, Math.min(3.5, 4 - (n.mag ?? 12) * 0.28));
       ctx.fillStyle = n.color || '#fff';
       if (r < 2.2) ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
