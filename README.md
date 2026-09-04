@@ -21,7 +21,18 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
   click to inspect, double-click to lock on. Top / Tilted / Edge-on presets, auto-spin, and a
   "Height ×10" toggle that exaggerates how far each planet sits above or below the ecliptic.
 
-## Run
+## Live site
+
+**https://arminforoughi.github.io/starnav/** — a static build on GitHub Pages. Stars, galaxies and
+landmarks are prebuilt into `docs/data.json`; planet positions in `docs/planets.json` are refreshed
+every day by a GitHub Actions job (`.github/workflows/planets.yml`) that calls JPL Horizons.
+Rebuild the static site after changing the viewer or catalogs:
+
+```bash
+python3 fetch_planets.py && python3 build_static.py && git add docs && git commit -m "Rebuild site" && git push
+```
+
+## Run locally
 
 ```bash
 python3 server.py
