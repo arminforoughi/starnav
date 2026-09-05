@@ -29,8 +29,13 @@ def sid(s):
     return src_index[s]
 
 sig = lambda v: float(f"{v:.7g}") if v is not None else None
-nodes = []
-for r in conn.execute("SELECT * FROM nodes WHERE kind NOT IN ('sun','planet','moon','dwarf')"):
+nodes, star_rows = [], []
+STAR_COLS = ["id", "name", "x", "y", "z", "mag", "color", "dist_pc", "spect", "con"]
+for r in conn.execute("SELECT * FROM nodes WHERE kind = 'star'"):
+    star_rows.append([r["id"], r["name"], sig(r["x"]), sig(r["y"]), sig(r["z"]), sig(r["mag"]), r["color"],
+                      sig(r["dist_pc"]), r["spect"] or None, r["con"] or None])
+star_source = conn.execute("SELECT source FROM nodes WHERE kind='star' LIMIT 1").fetchone()
+for r in conn.execute("SELECT * FROM nodes WHERE kind NOT IN ('sun','planet','moon','dwarf','star')"):
     n = {"id": r["id"], "name": r["name"], "kind": r["kind"], "x": sig(r["x"]), "y": sig(r["y"]), "z": sig(r["z"]),
          "s": sid(r["source"])}
     for k in ("mag", "dist_pc"):
@@ -43,7 +48,8 @@ edges = [dict(r) for r in conn.execute("SELECT src,dst,rel FROM edges WHERE src 
 edges = [e for e in edges if e["rel"] != "near" or not e["src"].startswith(("hyg-", "fb-"))]   # star->sun edges are implicit
 meta = {k: v for k, v in server.get_meta().items() if k != "epoch"}
 with open(os.path.join(OUT, "data.json"), "w") as f:
-    json.dump({"nodes": nodes, "edges": edges, "sources": sources, "meta": meta}, f, separators=(",", ":"))
+    json.dump({"nodes": nodes, "stars": {"cols": STAR_COLS, "rows": star_rows, "source": star_source[0] if star_source else ""},
+               "edges": edges, "sources": sources, "meta": meta}, f, separators=(",", ":"))
 
 html = open(os.path.join(ROOT, "static", "index.html")).read()
 html = html.replace("<script>\nconst AU_KM", "<script>window.STATIC = true;</script>\n<script>\nconst AU_KM", 1)
@@ -51,4 +57,4 @@ assert "window.STATIC = true" in html, "could not inject static flag"
 with open(os.path.join(OUT, "index.html"), "w") as f:
     f.write(html)
 open(os.path.join(OUT, ".nojekyll"), "w").close()
-print(f"built docs/: {len(nodes)} nodes, {len(edges)} edges, data.json {os.path.getsize(os.path.join(OUT,'data.json'))/1e6:.1f} MB")
+print(f"built docs/: {len(nodes)} nodes + {len(star_rows)} stars, {len(edges)} edges, data.json {os.path.getsize(os.path.join(OUT,'data.json'))/1e6:.1f} MB")

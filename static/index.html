@@ -243,6 +243,70 @@ function drawMarker(n, sx, sy, r) {
   }
 }
 
+// Additive pixel layer: tens of thousands of faint dots cost ~10 ms this way, versus 60+ ms as
+// canvas paths. Brightness accumulates where stars overlap, so dense regions glow naturally.
+let pix = null;
+function hexRgb(h) { h = h || '#ffffff'; return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+function beginPixelLayer() {
+  const pd = Math.min(dpr, 2), pw = Math.round(W * pd), ph = Math.round(H * pd);
+  if (pw < 1 || ph < 1) { pix = null; return; }   // hidden tab / zero-size canvas
+  if (!pix || pix.pw !== pw || pix.ph !== ph) {
+    const cv = document.createElement('canvas'); cv.width = pw; cv.height = ph;
+    const cx = cv.getContext('2d');
+    pix = { cv, cx, pw, ph, pd, img: cx.createImageData(pw, ph) };
+  }
+  pix.img.data.fill(0);
+}
+function endPixelLayer() { if (pix) { pix.cx.putImageData(pix.img, 0, 0); ctx.drawImage(pix.cv, 0, 0, W, H); } }
+
+// Point clouds (stars, catalog galaxies) as typed arrays for the hot loop.
+let stars = null, gals = null, bigNodes = [];
+function makeCloud(list, rOf, wOf, fewMag, allMag) {
+  const n = list.length, c = { n, nodes: list, xyz: new Float64Array(n * 3), r: new Float32Array(n), w: new Float32Array(n),
+    rgb: new Uint8Array(n * 3), sx: new Float32Array(n), sy: new Float32Array(n), vis: new Uint8Array(n),
+    labelFew: [], labelAll: [], index: new Map() };
+  list.forEach((s, i) => {
+    c.xyz[i * 3] = s.x; c.xyz[i * 3 + 1] = s.y; c.xyz[i * 3 + 2] = s.z;
+    c.r[i] = rOf(s); c.w[i] = wOf(s);
+    const [R, G, B] = hexRgb(s.color); c.rgb[i * 3] = R; c.rgb[i * 3 + 1] = G; c.rgb[i * 3 + 2] = B;
+    const m = s.mag ?? 99; if (m <= fewMag) c.labelFew.push(i); if (m <= allMag) c.labelAll.push(i);
+    c.index.set(s.id, i);
+  });
+  return c;
+}
+function buildClouds() {
+  stars = makeCloud(nodes.filter(n => n.kind === 'star'),
+    s => Math.max(1.2, Math.min(6, 4.2 - s.mag * 0.75)), s => s.mag > 6.5 ? Math.max(0.35, 1 - (s.mag - 6.5) * 0.12) : 1, 4, 7);
+  gals = makeCloud(nodes.filter(n => n.kind === 'galaxy' && n.note == null),
+    s => Math.max(0.8, Math.min(3.5, 4 - (s.mag ?? 12) * 0.28)), () => 1, 11, 13);
+  bigNodes = nodes.filter(n => n.kind !== 'star' && !(n.kind === 'galaxy' && n.note == null));
+}
+function drawCloud(c, bigDots) {
+  const { xyz, r, w, rgb, sx: SX, sy: SY, vis } = c;
+  const cx = C.x, cy = C.y, cz = SOLAR.has(C.kind) ? zRef + (C.z - zRef) * ZX : C.z;
+  const r0 = R[0], r1 = R[1], r2 = R[2], r3 = R[3], r4 = R[4], r5 = R[5];
+  const hw = W / 2, hh = H / 2, lim = 40;
+  const P = pix, d = P && P.img.data, PW = P ? P.pw : 0, PH = P ? P.ph : 0, PD = P ? P.pd : 1;
+  for (let i = 0, j = 0; i < c.n; i++, j += 3) {
+    const dx = xyz[j] - cx, dy = xyz[j + 1] - cy, dz = xyz[j + 2] - cz;
+    const sx = hw + (r0 * dx + r1 * dy + r2 * dz) * scale, sy = hh - (r3 * dx + r4 * dy + r5 * dz) * scale;
+    if (sx < -lim || sy < -lim || sx > W + lim || sy > H + lim) { vis[i] = 0; continue; }
+    vis[i] = 1; SX[i] = sx; SY[i] = sy;
+    const rr = r[i];
+    if (rr >= 2.2) { bigDots.push([sx, sy, c.nodes[i], rr]); continue; }
+    if (!d) continue;
+    const size = Math.max(1, Math.min(5, Math.round(rr * PD)));
+    const x0 = Math.round(sx * PD - size / 2), y0 = Math.round(sy * PD - size / 2);
+    const wt = w[i], Rv = rgb[j] * wt, Gv = rgb[j + 1] * wt, Bv = rgb[j + 2] * wt;
+    for (let y = y0 < 0 ? 0 : y0, ye = Math.min(PH, y0 + size); y < ye; y++) {
+      for (let x = x0 < 0 ? 0 : x0, xe = Math.min(PW, x0 + size); x < xe; x++) {
+        const k = (y * PW + x) * 4;
+        d[k] += Rv; d[k + 1] += Gv; d[k + 2] += Bv; d[k + 3] = 255;   // Uint8Clamped: saturates at 255
+      }
+    }
+  }
+}
+
 function draw() {
   updateCamera();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -325,29 +389,33 @@ function draw() {
 
   // bodies. Level of detail: stars vanish into the Sun's pixel beyond ~500k ly of view width,
   // and catalog galaxies are only worth drawing once the view spans ~200k ly.
-  // Small dots (stars, catalog galaxies) are drawn immediately as rects - tens of thousands
-  // of them cost only a few ms - while the handful of larger markers are depth-sorted.
+  // Stars and catalog galaxies live in typed arrays and go through one allocation-free loop
+  // into the additive pixel layer; only the few dozen larger markers are depth-sorted.
   const widthLy = W / scale / AU_PER_LY;
   const showStars = widthLy < 5e5, showCatalogGalaxies = widthLy > 2e5;
   const labelStars = $('starLabels').checked;
-  const drawn = [], labelCands = [];
-  for (const n of nodes) {
-    const isStar = n.kind === 'star', isCat = n.kind === 'galaxy' && n.note == null;
-    if (isStar ? !showStars : (isCat && !showCatalogGalaxies)) continue;
+  const drawn = [], labelCands = [], bigDots = [];
+  beginPixelLayer();
+  if (stars) { if (showStars) drawCloud(stars, bigDots); else stars.vis.fill(0); }
+  if (gals) { if (showCatalogGalaxies) drawCloud(gals, bigDots); else gals.vis.fill(0); }
+  endPixelLayer();
+  for (const [sx, sy, n, r] of bigDots) {           // bright stars: real discs above the pixel layer
+    ctx.fillStyle = n.color || '#fff';
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+    if (n.kind === 'star' && n.mag < 1) { ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
+  }
+  for (const cloud of [stars, gals]) {                // label candidates from the clouds
+    if (!cloud || (cloud === stars ? !showStars : !showCatalogGalaxies)) continue;
+    const idx = labelStars || (cloud === stars && scale > 1e-4) ? cloud.labelAll : cloud.labelFew;
+    for (const i of idx) if (cloud.vis[i]) labelCands.push([cloud.sx[i], cloud.sy[i], cloud.nodes[i], cloud.r[i]]);
+    for (const n of [selected, hover]) {
+      const i = n && cloud.index.get(n.id);
+      if (i != null && cloud.vis[i]) labelCands.push([cloud.sx[i], cloud.sy[i], n, cloud.r[i]]);
+    }
+  }
+  for (const n of bigNodes) {
     const [sx, sy, d] = proj(n);
     if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
-    if (isStar || isCat) {
-      const r = isStar ? Math.max(1.0, Math.min(6, 4.2 - n.mag * 0.75))
-                       : Math.max(0.8, Math.min(3.5, 4 - (n.mag ?? 12) * 0.28));
-      ctx.fillStyle = n.color || '#fff';
-      if (r < 2.2) ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
-      else { ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
-        if (isStar && n.mag < 1) { ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; } }
-      screenPos.push([sx, sy, n, r]);
-      if (n === selected || n === hover || labelStars || (isStar ? n.mag <= 4 || scale > 1e-4 : (n.mag ?? 99) <= 11))
-        labelCands.push([sx, sy, n, r]);
-      continue;
-    }
     const r = DEEP.has(n.kind) ? (n.kind === 'galaxy' ? 7 : n.kind === 'gcluster' ? 9 : 5)
                                : Math.max(n.kind === 'sun' ? 4 : 2.5, (n.radius_km / AU_KM) * scale);
     drawn.push([sx, sy, n, r, d]);
@@ -464,6 +532,14 @@ function pick(mx, my) {
     const d = Math.hypot(sx - mx, sy - my) - Math.min(r, 8);
     if (d < bd) { bd = d; best = n; }
   }
+  for (const c of [stars, gals]) {
+    if (!c) continue;
+    for (let i = 0; i < c.n; i++) {
+      if (!c.vis[i]) continue;
+      const d = Math.hypot(c.sx[i] - mx, c.sy[i] - my) - Math.min(c.r[i], 8);
+      if (d < bd) { bd = d; best = c.nodes[i]; }
+    }
+  }
   return best;
 }
 function setCenter(id) { centerId = id; $('center').value = id; draw(); }
@@ -490,8 +566,8 @@ function skyCoords(n) {                 // ecliptic xyz -> RA/Dec (J2000)
   const r = Math.hypot(xq, yq, zq); if (!r) return null;
   let ra = Math.atan2(yq, xq) * 12 / Math.PI; if (ra < 0) ra += 24;
   const dec = Math.asin(zq / r) * 180 / Math.PI;
-  const rh = Math.floor(ra), rm = Math.round((ra - rh) * 60);
-  const dd = Math.trunc(dec), dm = Math.round(Math.abs(dec - dd) * 60);
+  const raMin = Math.round(ra * 60) % (24 * 60), rh = Math.floor(raMin / 60), rm = raMin % 60;
+  const decMin = Math.round(Math.abs(dec) * 60), dd = Math.floor(decMin / 60), dm = decMin % 60;
   return `${rh}h ${String(rm).padStart(2, '0')}m, ${dec < 0 ? '-' : '+'}${Math.abs(dd)}° ${String(dm).padStart(2, '0')}'`;
 }
 function fmtYears(y) {
@@ -612,6 +688,14 @@ async function load() {
   if (window.STATIC) {                              // static site: prebuilt catalog + daily planets file
     const [cat, pl] = await Promise.all([fetch('data.json').then(r => r.json()), fetch('planets.json').then(r => r.json())]);
     for (const n of cat.nodes) { n.source = cat.sources[n.s]; delete n.s; }
+    if (cat.stars) {                                // compact column format: {cols, rows, source}
+      const cols = cat.stars.cols;
+      for (const row of cat.stars.rows) {
+        const n = { kind: 'star', source: cat.stars.source };
+        cols.forEach((c, i) => { if (row[i] != null && row[i] !== '') n[c] = row[i]; });
+        cat.nodes.push(n);
+      }
+    }
     d = { nodes: pl.nodes.concat(cat.nodes), edges: pl.edges.concat(cat.edges), meta: { ...cat.meta, epoch: pl.epoch },
           status: { status: `Planets from JPL Horizons, refreshed daily (last ${pl.fetched.slice(0, 16).replace('T', ' ')} UTC).`, busy: false } };
     for (const id of ['epoch', 'refresh', 'reloadStars']) { const el = $(id); el.hidden = true; if (el.previousElementSibling?.tagName === 'LABEL') el.previousElementSibling.hidden = true; }
@@ -631,6 +715,7 @@ async function load() {
   $('names').innerHTML = nodes.filter(n => !(n.kind === 'galaxy' && n.note == null) || (n.mag ?? 99) <= 10)
     .map(n => `<option value="${n.name}">`).join('');
   if (selected) selected = byId[selected.id] || null;
+  buildClouds();
   if (!$('epoch').value && meta.epoch) $('epoch').value = meta.epoch.replace(' ', 'T');
   showStatus(d.status); draw();
   return d.status;

@@ -31,8 +31,8 @@ STATIC = os.path.join(ROOT, "static")
 HORIZONS = "https://ssd.jpl.nasa.gov/api/horizons.api"
 HYG_URL = ("https://raw.githubusercontent.com/astronexus/HYG-Database/"
            "main/hyg/CURRENT/hygdata_v40.csv.gz")
-STAR_MAG_LIMIT = float(os.environ.get("STARNAV_MAG_LIMIT", "6.5"))   # 6.5 = naked-eye limit, ~9,000 stars
-STAR_NEAR_PC = float(os.environ.get("STARNAV_NEAR_PC", "100"))       # plus every catalog star within 100 pc (~25,000)
+STAR_MAG_LIMIT = float(os.environ.get("STARNAV_MAG_LIMIT", "99"))    # 99 = whole catalog (~109,000); 6.5 = naked-eye (~9,000)
+STAR_NEAR_PC = float(os.environ.get("STARNAV_NEAR_PC", "100"))       # always keep every catalog star within this distance
 
 AU_PER_PC = 206264.806
 OBLIQUITY = math.radians(23.4392911)   # J2000 mean obliquity
