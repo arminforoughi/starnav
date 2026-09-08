@@ -291,6 +291,41 @@ def refresh_galaxies():
     set_status(f"Galaxies loaded: {n_lv} Local Volume + {len(rows) - n_lv} 2MRS.", False)
 
 
+CEPHEID_URL = VIZIER + "?-source=J/other/Sci/365.478&-out.max=unlimited&-out=Name,GLON,GLAT,Dist,Per,Age,Mode"
+# galactic (l, b) -> equatorial J2000 rotation (rows give x_eq, y_eq, z_eq from x_gal, y_gal, z_gal)
+GAL2EQ = ((-0.0548755604, 0.4941094279, -0.8676661490),
+          (-0.8734370902, -0.4448296300, -0.1980763734),
+          (-0.4838350155, 0.7469822445, 0.4559837762))
+
+
+def refresh_cepheids():
+    """Classical Cepheids across the whole Milky Way disk (OGLE, Skowron+ 2019), distances from period-luminosity."""
+    set_status("Downloading Milky Way Cepheid map (VizieR) ...", True)
+    rows = []
+    for r in vizier_rows(CEPHEID_URL):
+        try:
+            l, b, d = math.radians(float(r["GLON"])), math.radians(float(r["GLAT"])), float(r["Dist"])
+        except (KeyError, ValueError):
+            continue
+        xg, yg, zg = d * math.cos(b) * math.cos(l), d * math.cos(b) * math.sin(l), d * math.sin(b)
+        xq, yq, zq = (m[0] * xg + m[1] * yg + m[2] * zg for m in GAL2EQ)
+        x, y, z = eq_to_ecl(xq, yq, zq)
+        per, age = fnum(r.get("Per")), fnum(r.get("Age"))
+        note = "Classical Cepheid, a pulsating supergiant" + (f" with a {per:.2f}-day period" if per else "") + \
+               (f", about {age:.0f} million years old" if age else "") + \
+               ". Its distance comes from the period-luminosity relation, so it can be mapped even where parallax fails."
+        rows.append((f"cep-{r['Name'].replace(' ', '')}", r["Name"], "cepheid", x * AU_PER_PC, y * AU_PER_PC, z * AU_PER_PC,
+                     None, "#7fe3ff", None, d, None, None, "OGLE Cepheid map (Skowron+ 2019, VizieR)", note))
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as conn:
+        conn.execute("DELETE FROM nodes WHERE kind='cepheid'")
+        conn.executemany("INSERT OR REPLACE INTO nodes(id,name,kind,x,y,z,mag,color,radius_km,dist_pc,"
+                         "spect,con,source,note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         [r + (now,) for r in rows])
+    set_meta("cepheids_updated", now)
+    set_status(f"Cepheids loaded: {len(rows)}.", False)
+
+
 def refresh_landmarks():
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with db() as conn:
@@ -483,6 +518,11 @@ def seed_if_empty():
                 refresh_galaxies()
             except Exception as e:
                 errors.append(f"galaxies: {e}")
+        if count("kind = 'cepheid'") == 0:
+            try:
+                refresh_cepheids()
+            except Exception as e:
+                errors.append(f"cepheids: {e}")
         set_status("Error: " + "; ".join(errors) if errors else "Ready.", False)
     run_job(job)
 
@@ -497,6 +537,11 @@ class Handler(SimpleHTTPRequestHandler):
         if clean.startswith("/tiles/") or clean in ("/galaxy.bin", "/galaxy_lo.bin"):
             return os.path.join(ROOT, "docs", clean.lstrip("/"))       # built by build_tiles.py
         return super().translate_path(path)
+
+    def end_headers(self):
+        if self.path.split("?")[0] in ("/", "/index.html"):
+            self.send_header("Cache-Control", "no-cache")            # always pick up viewer edits
+        super().end_headers()
 
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/status"):
@@ -546,6 +591,8 @@ class Handler(SimpleHTTPRequestHandler):
                 started = run_job(refresh_landmarks)
             elif what == "galaxies":
                 started = run_job(refresh_galaxies)
+            elif what == "cepheids":
+                started = run_job(refresh_cepheids)
             else:
                 started = run_job(refresh_planets, epoch)
             return self.send_json({"ok": started, "status": dict(_state)},

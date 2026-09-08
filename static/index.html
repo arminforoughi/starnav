@@ -105,6 +105,7 @@
     <label><input type="checkbox" id="gaia" checked> Gaia stars</label>
     <label><input type="checkbox" id="density" checked> Galaxy density</label>
     <label><input type="checkbox" id="model" checked> Model disk</label>
+    <label><input type="checkbox" id="cepheids" checked> Cepheids</label>
   </div>
   <label for="epoch">Planet epoch (UTC)</label>
   <input id="epoch" type="datetime-local">
@@ -239,6 +240,9 @@ function drawMarker(n, sx, sy, r) {
       ctx.beginPath(); ctx.arc(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr, 1.3, 0, Math.PI * 2); ctx.fill();
     }
     ctx.beginPath(); ctx.arc(sx, sy, 1.5, 0, Math.PI * 2); ctx.fill();
+  } else if (n.kind === 'cepheid') {
+    ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
   } else {
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
     if (n.kind === 'sun' || (n.kind === 'star' && n.mag < 1)) {
@@ -587,11 +591,14 @@ function draw() {
       if (i != null && cloud.vis[i]) labelCands.push([cloud.sx[i], cloud.sy[i], n, cloud.r[i]]);
     }
   }
+  const showCepheids = $('cepheids').checked && widthLy > 3000;
   for (const n of bigNodes) {
+    if (n.kind === 'cepheid' && !showCepheids) continue;
     const [sx, sy, d] = proj(n);
     if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
     const r = DEEP.has(n.kind) ? (n.kind === 'galaxy' ? 7 : n.kind === 'gcluster' ? 9 : 5)
-                               : Math.max(n.kind === 'sun' ? 4 : 2.5, (n.radius_km / AU_KM) * scale);
+            : n.kind === 'cepheid' ? 1.5
+            : Math.max(n.kind === 'sun' ? 4 : 2.5, (n.radius_km / AU_KM) * scale);
     drawn.push([sx, sy, n, r, d]);
   }
   drawn.sort((a, b) => a[4] - b[4]);
@@ -610,6 +617,7 @@ function draw() {
     let show = forced;
     if (!show && (n.kind === 'star' || (n.kind === 'galaxy' && n.note == null))) show = starLabelsLeft > 0;
     else if (!show && DEEP.has(n.kind)) show = true;
+    else if (!show && n.kind === 'cepheid') show = false;
     else if (!show) {
       show = true;
       const parent = edges.find(e => e.src === n.id && e.rel === 'orbits');
@@ -757,7 +765,7 @@ function select(n) {
   selected = n; $('info').style.display = 'block'; $('iName').textContent = n.name;
   const c = byId[centerId] || { x: 0, y: 0, z: 0, name: 'center' };
   const dCenter = Math.hypot(n.x - c.x, n.y - c.y, n.z - c.z), dSun = Math.hypot(n.x, n.y, n.z);
-  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star' }[n.kind] || n.kind;
+  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star' }[n.kind] || n.kind;
   const catalog = n.kind === 'galaxy' && n.note == null;
   const rows = [], sect = t => rows.push([null, t]);
   const f = FACTS[n.id];
@@ -846,7 +854,7 @@ document.querySelectorAll('.presets button').forEach(b => b.onclick = () => setW
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }
-['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model'].forEach(id => $(id).onchange = draw);
+['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids'].forEach(id => $(id).onchange = draw);
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === '+' || e.key === '=') zoom(1.4);

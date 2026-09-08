@@ -18,6 +18,8 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
   drawn as an additive glow, plus a standard exponential-disk + four-arm spiral model calibrated to Gaia's
   local density for the parts of the galaxy Gaia cannot see (`docs/galaxy.bin`). Toggle "Model disk" to
   see only what is measured.
+- **Cepheids**: 2,214 classical Cepheids across the whole disk, including the far side, from the OGLE
+  Milky Way map (Skowron+ 2019, VizieR) with period-luminosity distances.
 - **Landmarks**: known black holes (Sagittarius A*, Gaia BH1/BH2/BH3, Cygnus X-1, V404 Cygni, …),
   clusters, nebulae, the Magellanic Clouds and Andromeda, galaxy clusters (Virgo, Coma, Perseus, the
   Great Attractor, Shapley, the Sloan Great Wall), the quasar 3C 273, a schematic Milky Way disk and
@@ -83,3 +85,4 @@ Then `python3 build_tiles.py <dir with the two csv files>` (needs numpy) and `py
 - `POST /api/refresh?what=stars` – re-download the star catalog
 - `POST /api/refresh?what=landmarks` – reload the built-in black hole / galaxy landmarks
 - `POST /api/refresh?what=galaxies` – re-download the galaxy catalogs from VizieR
+- `POST /api/refresh?what=cepheids` – re-download the Cepheid map from VizieR
