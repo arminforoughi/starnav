@@ -492,6 +492,12 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=STATIC, **kw)
 
+    def translate_path(self, path):
+        clean = urllib.parse.urlparse(path).path
+        if clean.startswith("/tiles/") or clean in ("/galaxy.bin", "/galaxy_lo.bin"):
+            return os.path.join(ROOT, "docs", clean.lstrip("/"))       # built by build_tiles.py
+        return super().translate_path(path)
+
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/status"):
             super().log_message(fmt, *args)

@@ -102,6 +102,9 @@
     <label><input type="checkbox" id="drops" checked> Height lines</label>
     <label><input type="checkbox" id="exag"> Height ×10</label>
     <label><input type="checkbox" id="galaxy" checked> Galaxy guides</label>
+    <label><input type="checkbox" id="gaia" checked> Gaia stars</label>
+    <label><input type="checkbox" id="density" checked> Galaxy density</label>
+    <label><input type="checkbox" id="model" checked> Model disk</label>
   </div>
   <label for="epoch">Planet epoch (UTC)</label>
   <input id="epoch" type="datetime-local">
@@ -178,10 +181,11 @@ const GAL_U = radecUnit(266.405, -28.936), GAL_N = radecUnit(192.859, 27.128), G
 const ECL = [[1, 0, 0], [0, 1, 0]], GAL = [GAL_U, GAL_V];
 
 // ------------------------------------------------------------- formatting
+const trimNum = s => s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;   // "1.50" -> "1.5", "120" stays "120"
 function fmtDist(au) {
-  const t = v => v.toPrecision(3).replace(/\.?0+$/, '');
+  const t = v => trimNum(v.toPrecision(3));
   if (au < 0.01) return (au * AU_KM).toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' km';
-  if (au < 5000) return au.toPrecision(4).replace(/\.?0+$/, '') + ' AU';
+  if (au < 5000) return trimNum(au.toPrecision(4)) + ' AU';
   const ly = au / AU_PER_LY;
   if (ly < 1000) return t(ly) + ' ly';
   if (ly < 1e6) return t(ly / 1000) + 'k ly';
@@ -293,7 +297,7 @@ function drawCloud(c, bigDots) {
     if (sx < -lim || sy < -lim || sx > W + lim || sy > H + lim) { vis[i] = 0; continue; }
     vis[i] = 1; SX[i] = sx; SY[i] = sy;
     const rr = r[i];
-    if (rr >= 2.2) { bigDots.push([sx, sy, c.nodes[i], rr]); continue; }
+    if (rr >= 2.2) { bigDots.push([sx, sy, cloudNode(c, i), rr]); continue; }
     if (!d) continue;
     const size = Math.max(1, Math.min(5, Math.round(rr * PD)));
     const x0 = Math.round(sx * PD - size / 2), y0 = Math.round(sy * PD - size / 2);
@@ -307,12 +311,177 @@ function drawCloud(c, bigDots) {
   }
 }
 
+// ------------------------------------------------------------- Gaia star tiles (level of detail)
+// Stars are pre-sorted into cells (distance shell x sky patch) and luminosity tiers; each frame the
+// viewer picks the cells in view and the tiers the zoom level warrants, under a fixed point budget.
+const TILE_BUDGET = 260000, TILE_CACHE_MAX = 900000, TILE_PARALLEL = 6;
+let tileIndex = null, tileCells = [], tileIndexState = 0, tileInflight = 0, tileTick = 0, activeTiles = [];
+const tiles = new Map();
+let drawQueued = false;
+function requestDraw() { if (drawQueued) return; drawQueued = true; setTimeout(() => { drawQueued = false; draw(); }, 16); }
+function tierForWidth(ly) { return ly < 150 ? 4 : ly < 500 ? 3 : ly < 1500 ? 2 : ly < 6000 ? 1 : 0; }
+function ensureTileIndex() {
+  if (tileIndexState) return; tileIndexState = 1;
+  fetch('tiles/index.json').then(r => r.json()).then(j => {
+    tileIndex = j;
+    tileCells = Object.entries(j.cells).map(([id, c]) => ({ id, cx: c.c[0], cy: c.c[1], cz: c.c[2], r: c.r, n: c.n }));
+    requestDraw();
+  }).catch(() => { tileIndexState = 2; });
+}
+function parseTile(buf, id) {
+  const n = Math.floor(buf.byteLength / 18);
+  const xyz = new Float32Array(buf, 0, n * 3), mag = new Int16Array(buf, n * 12, n), ex = new Uint8Array(buf, n * 14, n * 4);
+  const c = { n, tile: id, xyz, mag, nodes: null, objs: null, r: new Float32Array(n), w: new Float32Array(n), rgb: new Uint8Array(n * 3),
+    sx: new Float32Array(n), sy: new Float32Array(n), vis: new Uint8Array(n), labelFew: [], labelAll: [], index: new Map(), lastUse: 0 };
+  for (let i = 0; i < n; i++) {
+    const m = mag[i] / 100;
+    c.r[i] = Math.max(1.2, Math.min(6, 4.2 - m * 0.75)); c.w[i] = m > 6.5 ? Math.max(0.35, 1 - (m - 6.5) * 0.12) : 1;
+    c.rgb[i * 3] = ex[i * 4]; c.rgb[i * 3 + 1] = ex[i * 4 + 1]; c.rgb[i * 3 + 2] = ex[i * 4 + 2];
+  }
+  return c;
+}
+function requestTile(id) {
+  if (tileInflight >= TILE_PARALLEL) return;
+  tiles.set(id, 'loading'); tileInflight++;
+  fetch(`tiles/${id}.bin`).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then(b => { tiles.set(id, parseTile(b, id)); evictTiles(); requestDraw(); })
+    .catch(() => tiles.delete(id))
+    .finally(() => { tileInflight--; });
+}
+function evictTiles() {
+  let total = 0; for (const c of tiles.values()) if (c !== 'loading') total += c.n;
+  if (total <= TILE_CACHE_MAX) return;
+  const lru = [...tiles.entries()].filter(([, c]) => c !== 'loading').sort((a, b) => a[1].lastUse - b[1].lastUse);
+  for (const [id, c] of lru) { if (total <= TILE_CACHE_MAX * 0.8) break; if (c.lastUse === tileTick) continue; tiles.delete(id); total -= c.n; }
+}
+function selectTiles(maxTier) {
+  const want = [];
+  if (tileIndex.tier0_all) want.push({ id: 'tier0-all', n: tileIndex.tier0_all, prio: -1 });   // all-sky luminous stars
+  for (const cell of tileCells) {
+    const [sx, sy] = proj3(cell.cx, cell.cy, cell.cz), rp = cell.r * scale;
+    if (sx + rp < -20 || sy + rp < -20 || sx - rp > W + 20 || sy - rp > H + 20) continue;
+    const dc = Math.max(0, Math.hypot(sx - W / 2, sy - H / 2) - rp);
+    for (let t = tileIndex.tier0_all ? 1 : 0; t <= maxTier; t++) if (cell.n[t]) want.push({ id: `${cell.id}-${t}`, n: cell.n[t], prio: t * 1e7 + dc });
+  }
+  want.sort((a, b) => a.prio - b.prio);
+  const active = []; let count = 0;
+  for (const w of want) {
+    if (count + w.n > TILE_BUDGET) break;
+    count += w.n;
+    const c = tiles.get(w.id);
+    if (c && c !== 'loading') { c.lastUse = tileTick; active.push(c); } else if (!c) requestTile(w.id);
+  }
+  return active;
+}
+function cloudNode(c, i) {                         // materialise a star object from a point cloud on demand
+  if (c.nodes) return c.nodes[i];
+  if (!c.objs) c.objs = new Array(c.n);
+  if (!c.objs[i]) {
+    const x = c.xyz[i * 3], y = c.xyz[i * 3 + 1], z = c.xyz[i * 3 + 2], m = c.mag[i] / 100;
+    const hex = '#' + [0, 1, 2].map(k => c.rgb[i * 3 + k].toString(16).padStart(2, '0')).join('');
+    c.objs[i] = { id: `gaia-${c.tile}-${i}`, name: `Gaia star (G ${m.toFixed(1)})`, kind: 'star', x, y, z, mag: m, color: hex,
+                  dist_pc: Math.hypot(x, y, z) / AU_PER_PC, source: tileIndex ? tileIndex.source : 'Gaia DR3' };
+  }
+  return c.objs[i];
+}
+
+// ------------------------------------------------------------- Milky Way density layer
+// Real Gaia star counts (5 deg x 200 pc voxels, coarse 10 deg x 400 pc for wide views) plus a
+// standard exponential-disk + spiral-arm model beyond Gaia's reach, drawn as additive soft blobs.
+const galaxy = {}, galaxyLoading = {};
+function ensureGalaxy(level) {
+  if (galaxy[level] || galaxyLoading[level]) return; galaxyLoading[level] = true;
+  fetch(level === 'hi' ? 'galaxy.bin' : 'galaxy_lo.bin').then(r => r.arrayBuffer()).then(b => { galaxy[level] = new Float32Array(b); requestDraw(); })
+    .catch(() => {});
+}
+function makeSprite(color) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64; const g = cv.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, color); grad.addColorStop(0.5, color.replace(')', ',0.35)').replace('rgb', 'rgba')); grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64); return cv;
+}
+const spriteGaia = makeSprite('rgb(255,232,200)'), spriteModel = makeSprite('rgb(190,205,255)');
+let dens = null;                                   // low-res CPU accumulation buffer for the glow
+function drawDensity(widthLy) {
+  if (!$('density').checked || widthLy < 8000 || widthLy > 1.5e6) return 0;
+  const fineR = 120 * AU_PER_PC * scale, level = fineR >= 6 ? 'hi' : 'lo';
+  ensureGalaxy(level);
+  const v = galaxy[level] || galaxy[level === 'hi' ? 'lo' : 'hi']; if (!v) return 0;
+  const DS = 4, dw = Math.max(1, Math.round(W / DS)), dh = Math.max(1, Math.round(H / DS));
+  if (!dens || dens.dw !== dw || dens.dh !== dh) {
+    const cv = document.createElement('canvas'); cv.width = dw; cv.height = dh;
+    dens = { dw, dh, cv, g: cv.getContext('2d'), img: null, acc: new Float32Array(dw * dh * 2) };
+    dens.img = dens.g.createImageData(dw, dh);
+  }
+  const acc = dens.acc; acc.fill(0);
+  const showModel = $('model').checked;
+  const r0 = R[0], r1 = R[1], r2 = R[2], r3 = R[3], r4 = R[4], r5 = R[5], cx = C.x, cy = C.y, cz = C.z, hw = W / 2, hh = H / 2;
+  const k = scale / DS, RMAX = 9;
+  let drawnV = 0;
+  for (let i = 0; i < v.length; i += 6) {
+    const kind = v[i + 5]; if (kind === 1 && !showModel) continue;
+    const dx = v[i] - cx, dy = v[i + 1] - cy, dz = v[i + 2] - cz;
+    const sx = (hw + (r0 * dx + r1 * dy + r2 * dz) * scale) / DS, sy = (hh - (r3 * dx + r4 * dy + r5 * dz) * scale) / DS;
+    let rad = v[i + 3] * k; if (rad < 1) rad = 1;
+    const wgt = v[i + 4] / (rad * rad);            // column density: star count over the voxel's true footprint
+    if (rad > RMAX) rad = RMAX;
+    if (sx + rad < 0 || sy + rad < 0 || sx - rad > dw || sy - rad > dh) continue;
+    const x0 = Math.max(0, Math.floor(sx - rad)), x1 = Math.min(dw - 1, Math.ceil(sx + rad));
+    const y0 = Math.max(0, Math.floor(sy - rad)), y1 = Math.min(dh - 1, Math.ceil(sy + rad));
+    const inv = 1 / (rad * rad), off = kind === 1 ? 1 : 0;
+    for (let y = y0; y <= y1; y++) {
+      const ddy = (y + 0.5 - sy) * (y + 0.5 - sy);
+      for (let x = x0; x <= x1; x++) {
+        const ddx = (x + 0.5 - sx) * (x + 0.5 - sx), f = 1 - (ddx + ddy) * inv;
+        if (f > 0) acc[(y * dw + x) * 2 + off] += f * wgt;
+      }
+    }
+    drawnV++;
+  }
+  // smooth out the 5-degree sky binning (two box-blur passes, ~2 low-res px)
+  const tmp = dens.tmp || (dens.tmp = new Float32Array(acc.length));
+  for (let pass = 0; pass < 2; pass++) {
+    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+      const i = (y * dw + x) * 2; let a = 0, b = 0, cnt = 0;
+      for (let xx = Math.max(0, x - 1); xx <= Math.min(dw - 1, x + 1); xx++) { const j = (y * dw + xx) * 2; a += acc[j]; b += acc[j + 1]; cnt++; }
+      tmp[i] = a / cnt; tmp[i + 1] = b / cnt;
+    }
+    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+      const i = (y * dw + x) * 2; let a = 0, b = 0, cnt = 0;
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(dh - 1, y + 1); yy++) { const j = (yy * dw + x) * 2; a += tmp[j]; b += tmp[j + 1]; cnt++; }
+      acc[i] = a / cnt; acc[i + 1] = b / cnt;
+    }
+  }
+  // auto exposure, separately for the measured (warm) and model (cool) channels:
+  // the 99th percentile of each channel's lit pixels maps to ~65% brightness through a soft curve
+  const sa = [], sb = [];
+  for (let p = 0; p < dw * dh; p += 5) { if (acc[p * 2] > 0) sa.push(acc[p * 2]); if (acc[p * 2 + 1] > 0) sb.push(acc[p * 2 + 1]); }
+  if (!sa.length && !sb.length) return drawnV;
+  sa.sort((a, b) => a - b); sb.sort((a, b) => a - b);
+  const ka = sa.length ? 1.05 / sa[Math.floor(sa.length * 0.99)] : 0, kb = sb.length ? 1.05 / sb[Math.floor(sb.length * 0.99)] : 0;
+  const d = dens.img.data;
+  for (let p = 0, q = 0; p < dw * dh; p++, q += 4) {
+    const a = acc[p * 2] * ka, bb = acc[p * 2 + 1] * kb;
+    const b = bb > 0 ? Math.pow(bb, 0.45) * 0.9 : 0;                // gamma: keep the outer disk visible next to the bulge
+    const t = a + b;
+    if (t <= 0) { d[q + 3] = 0; continue; }
+    const lum = 255 * (1 - Math.exp(-t)), fa = a / t, fb = b / t;
+    d[q] = lum * (fa * 1.0 + fb * 0.6); d[q + 1] = lum * (fa * 0.88 + fb * 0.7); d[q + 2] = lum * (fa * 0.68 + fb * 1.0); d[q + 3] = 255;
+  }
+  dens.g.putImageData(dens.img, 0, 0);
+  ctx.globalCompositeOperation = 'lighter'; ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(dens.cv, 0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+  return drawnV;
+}
+
 function draw() {
   updateCamera();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = '#04060d'; ctx.fillRect(0, 0, W, H);
   screenPos = [];
   const c = C, cp = pos(c);
+  const densityVoxels = drawDensity(W / scale / AU_PER_LY);
 
   // Milky Way schematic: bulge and disk edge around the galactic centre, in the galactic plane
   const gc = byId['sgr-a'];
@@ -397,6 +566,11 @@ function draw() {
   const drawn = [], labelCands = [], bigDots = [];
   beginPixelLayer();
   if (stars) { if (showStars) drawCloud(stars, bigDots); else stars.vis.fill(0); }
+  let gaiaStars = 0;
+  if (showStars && $('gaia').checked) {
+    ensureTileIndex();
+    if (tileIndex) { tileTick++; activeTiles = selectTiles(tierForWidth(widthLy)); for (const t of activeTiles) { drawCloud(t, bigDots); gaiaStars += t.n; } }
+  } else { for (const t of activeTiles) t.vis.fill(0); activeTiles = []; }
   if (gals) { if (showCatalogGalaxies) drawCloud(gals, bigDots); else gals.vis.fill(0); }
   endPixelLayer();
   for (const [sx, sy, n, r] of bigDots) {           // bright stars: real discs above the pixel layer
@@ -473,7 +647,9 @@ function draw() {
   const tilt = Math.round(Math.acos(Math.max(-1, Math.min(1, R[8]))) * 180 / Math.PI);
   const az = Math.round(((Math.atan2(R[7], R[6]) * 180 / Math.PI) + 360) % 360);
   $('scaleText').textContent = `Locked on ${c.name || '—'} · tilt ${tilt}° · azimuth ${az}°` +
-    ` · view width ${fmtDist(W / scale)} · epoch ${meta.epoch || '—'} UTC`;
+    ` · view width ${fmtDist(W / scale)} · epoch ${meta.epoch || '—'} UTC` +
+    (gaiaStars ? ` · Gaia: ${activeTiles.length} tiles, ${gaiaStars.toLocaleString()} stars` : '') +
+    (densityVoxels ? ` · density: ${densityVoxels.toLocaleString()} voxels` : '');
 }
 
 // ------------------------------------------------------------- interaction
@@ -532,12 +708,12 @@ function pick(mx, my) {
     const d = Math.hypot(sx - mx, sy - my) - Math.min(r, 8);
     if (d < bd) { bd = d; best = n; }
   }
-  for (const c of [stars, gals]) {
+  for (const c of [stars, gals, ...activeTiles]) {
     if (!c) continue;
     for (let i = 0; i < c.n; i++) {
       if (!c.vis[i]) continue;
       const d = Math.hypot(c.sx[i] - mx, c.sy[i] - my) - Math.min(c.r[i], 8);
-      if (d < bd) { bd = d; best = c.nodes[i]; }
+      if (d < bd) { bd = d; best = cloudNode(c, i); }
     }
   }
   return best;
@@ -572,10 +748,10 @@ function skyCoords(n) {                 // ecliptic xyz -> RA/Dec (J2000)
 }
 function fmtYears(y) {
   if (y < 1) return Math.round(y * 365.25 * 24 * 60) + ' minutes';
-  if (y < 1000) return y.toPrecision(3).replace(/\.?0+$/, '') + ' years';
-  if (y < 1e6) return (y / 1000).toPrecision(3).replace(/\.?0+$/, '') + ' thousand years';
-  if (y < 1e9) return (y / 1e6).toPrecision(3).replace(/\.?0+$/, '') + ' million years';
-  return (y / 1e9).toPrecision(3).replace(/\.?0+$/, '') + ' billion years';
+  if (y < 1000) return trimNum(y.toPrecision(3)) + ' years';
+  if (y < 1e6) return trimNum((y / 1000).toPrecision(3)) + ' thousand years';
+  if (y < 1e9) return trimNum((y / 1e6).toPrecision(3)) + ' million years';
+  return trimNum((y / 1e9).toPrecision(3)) + ' billion years';
 }
 function select(n) {
   selected = n; $('info').style.display = 'block'; $('iName').textContent = n.name;
@@ -670,7 +846,7 @@ document.querySelectorAll('.presets button').forEach(b => b.onclick = () => setW
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }
-['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy'].forEach(id => $(id).onchange = draw);
+['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model'].forEach(id => $(id).onchange = draw);
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === '+' || e.key === '=') zoom(1.4);

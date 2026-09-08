@@ -11,6 +11,13 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
 - **Galaxies**: ~870 galaxies within 36 Mly with measured distances (Local Volume catalog,
   Karachentsev+ 2013) and ~43,000 galaxies out to ~1 Gly from the 2MASS Redshift Survey
   (Huchra+ 2012; distances from redshift with H0 = 70), both fetched from VizieR and cached.
+- **Gaia star tiles**: 1.9 million Gaia DR3 stars (G < 11.5, good parallaxes) sorted into distance shells,
+  sky patches and luminosity tiers. The viewer streams only the tiles in view, at the detail level the zoom
+  warrants, under a fixed budget of points per frame (`build_tiles.py`, `docs/tiles/`).
+- **Milky Way density**: real Gaia star counts (volume-limited to intrinsically bright stars, 5° × 200 pc voxels)
+  drawn as an additive glow, plus a standard exponential-disk + four-arm spiral model calibrated to Gaia's
+  local density for the parts of the galaxy Gaia cannot see (`docs/galaxy.bin`). Toggle "Model disk" to
+  see only what is measured.
 - **Landmarks**: known black holes (Sagittarius A*, Gaia BH1/BH2/BH3, Cygnus X-1, V404 Cygni, …),
   clusters, nebulae, the Magellanic Clouds and Andromeda, galaxy clusters (Virgo, Coma, Perseus, the
   Great Attractor, Shapley, the Sloan Great Wall), the quasar 3C 273, a schematic Milky Way disk and
@@ -50,6 +57,23 @@ python3 server.py 8000 --lan
 ```
 
 The page is touch-friendly: one finger tumbles, two fingers pinch-zoom, the ☰ button shows the controls.
+
+## Rebuilding the Gaia layers
+
+Two ADQL queries against the [Gaia archive](https://gea.esac.esa.int/archive/) (async TAP, no login needed):
+
+```sql
+-- gaia_stars.csv
+SELECT ra, dec, parallax, phot_g_mean_mag, bp_rp FROM gaiadr3.gaia_source
+ WHERE phot_g_mean_mag < 11.5 AND parallax > 0.05 AND parallax_over_error > 5
+-- gaia_density.csv
+SELECT FLOOR(ra/5) AS rb, FLOOR((dec+90)/5) AS db, FLOOR(1000.0/parallax/200.0) AS dist_bin, COUNT(*) AS n
+  FROM gaiadr3.gaia_source
+ WHERE parallax > 0.1 AND parallax_over_error > 3 AND phot_g_mean_mag + 5*LOG10(parallax) - 10 < 3.5
+ GROUP BY rb, db, dist_bin
+```
+
+Then `python3 build_tiles.py <dir with the two csv files>` (needs numpy) and `python3 build_static.py`.
 
 ## API
 
