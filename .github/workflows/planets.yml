@@ -1,4 +1,4 @@
-name: Update planet positions
+name: Update planet and satellite data
 on:
   schedule:
     - cron: "17 3 * * *"      # daily, 03:17 UTC
@@ -13,10 +13,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: python3 fetch_planets.py
+      - run: python3 fetch_satellites.py
       - name: Commit if changed
         run: |
           git config user.name "starnav-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add docs/planets.json
-          git diff --cached --quiet || git commit -m "Update planet positions from JPL Horizons"
+          git add docs/planets.json docs/satellites.json
+          git diff --cached --quiet || git commit -m "Update planets (JPL Horizons) and satellites (CelesTrak)"
           git push

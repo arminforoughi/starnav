@@ -88,6 +88,10 @@
     <button data-au="1.6e14">2MRS edge</button>
     <button data-au="6.3e15">Universe</button>
   </div>
+  <div class="row presets">
+    <button data-lock="earth" data-au="7e-4">Earth orbit</button>
+    <button data-lock="earth" data-au="6.5e-3">Earth–Moon</button>
+  </div>
   <label>View angle</label>
   <div class="row angles">
     <button data-tilt="0">Top</button>
@@ -106,6 +110,8 @@
     <label><input type="checkbox" id="density" checked> Galaxy density</label>
     <label><input type="checkbox" id="model" checked> Model disk</label>
     <label><input type="checkbox" id="cepheids" checked> Cepheids</label>
+    <label><input type="checkbox" id="sats" checked> Satellites</label>
+    <label><input type="checkbox" id="starlink" checked> Starlink</label>
   </div>
   <label for="epoch">Planet epoch (UTC)</label>
   <input id="epoch" type="datetime-local">
@@ -141,7 +147,7 @@ let centerId = 'sun';
 let scale = 60;                                    // px per AU
 let selected = null, hover = null, screenPos = [];
 let W = 0, H = 0, dpr = 1, spinning = false;
-const MIN_SCALE = 1e-13, MAX_SCALE = 4e4;
+const MIN_SCALE = 1e-13, MAX_SCALE = 3e8;   // 3e8 px/AU: Earth ~12,800 px across, low orbits resolvable
 
 // ------------------------------------------------------------- free trackball camera
 // World: heliocentric ecliptic J2000, AU. R is a 3x3 rotation (row-major) applied to
@@ -245,6 +251,12 @@ function drawMarker(n, sx, sy, r) {
     ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
   } else {
+    if (r > 14 && SOLAR.has(n.kind)) {                // zoomed-in planet: shaded disc with a limb
+      const g = ctx.createRadialGradient(sx - r * 0.35, sy - r * 0.35, 0, sx, sy, r);
+      g.addColorStop(0, '#dfe9ff'); g.addColorStop(0.08, n.color); g.addColorStop(0.75, n.color); g.addColorStop(1, '#0a1020');
+      ctx.fillStyle = g;
+      if (n.id === 'earth') { ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.arc(sx, sy, r * 1.04, 0, Math.PI * 2); ctx.fillStyle = '#7fb4ff'; ctx.fill(); ctx.globalAlpha = 1; ctx.fillStyle = g; }
+    }
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
     if (n.kind === 'sun' || (n.kind === 'star' && n.mag < 1)) {
       ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
@@ -480,6 +492,111 @@ function drawDensity(widthLy) {
   return drawnV;
 }
 
+// ------------------------------------------------------------- Earth satellites (live, SGP4 in a worker)
+// Orbital elements come from CelesTrak (docs/satellites.json, refreshed daily). A web worker propagates
+// them with satellite.js every few seconds; the main thread extrapolates along the velocity between updates.
+const SAT_COLORS = { stations: '#ffffff', science: '#ff8cf0', visual: '#d8dce6', 'gps-ops': '#7dff9b', galileo: '#7dff9b',
+                     weather: '#ffe680', geo: '#ffb060', starlink: '#8fc6ff' };
+const SAT_LABEL = new Set(['ISS (ZARYA)', 'CSS (TIANHE)', 'HST', 'TIANGONG', 'ISS']);
+let sat = null, satLoading = false, satTimer = null, satTrack = null;
+function eqToEclKm(x, y, z) {                       // TEME/equatorial km -> ecliptic AU
+  const e = 23.4392911 * Math.PI / 180, c = Math.cos(e), sn = Math.sin(e);
+  return [x / AU_KM, (y * c + z * sn) / AU_KM, (-y * sn + z * c) / AU_KM];
+}
+function ensureSatellites() {
+  if (sat || satLoading) return; satLoading = true;
+  fetch('satellites.json').then(r => r.json()).then(j => {
+    const list = j.sats, n = list.length;
+    const src = `importScripts('https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js');
+      let recs = [];
+      onmessage = e => {
+        if (e.data.tles) { recs = e.data.tles.map(t => { try { return satellite.twoline2satrec(t[0], t[1]); } catch (_) { return null; } }); postMessage({ ready: recs.length }); return; }
+        if (e.data.track != null) {
+          const r = recs[e.data.track], pts = new Float32Array(e.data.steps * 3), dt = e.data.periodMs / (e.data.steps - 1);
+          for (let k = 0; k < e.data.steps; k++) { const pv = r && satellite.propagate(r, new Date(e.data.t + k * dt)); const p = pv && pv.position;
+            if (p && typeof p === 'object') { pts[k * 3] = p.x; pts[k * 3 + 1] = p.y; pts[k * 3 + 2] = p.z; } else pts[k * 3] = NaN; }
+          postMessage({ track: e.data.track, pts }, [pts.buffer]); return;
+        }
+        const date = new Date(e.data.t), out = new Float32Array(recs.length * 6); let ok = 0;
+        for (let i = 0; i < recs.length; i++) { const r = recs[i]; const pv = r && satellite.propagate(r, date); const p = pv && pv.position, v = pv && pv.velocity;
+          if (!p || typeof p !== 'object') { out[i * 6] = NaN; continue; }
+          out[i * 6] = p.x; out[i * 6 + 1] = p.y; out[i * 6 + 2] = p.z; out[i * 6 + 3] = v.x; out[i * 6 + 4] = v.y; out[i * 6 + 5] = v.z; ok++; }
+        postMessage({ t: e.data.t, out, ok }, [out.buffer]);
+      };`;
+    const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    sat = { list, n, worker, pos: null, t0: 0, ok: 0, fetched: j.fetched, source: j.source, ready: false,
+            sx: new Float32Array(n), sy: new Float32Array(n), vis: new Uint8Array(n), objs: new Array(n),
+            group: list.map(s => s.g), color: list.map(s => SAT_COLORS[s.g] || '#ccc') };
+    worker.onmessage = e => {
+      if (e.data.ready != null) { sat.ready = true; satTick(); return; }
+      if (e.data.track != null) { satTrack = { i: e.data.track, pts: e.data.pts }; requestDraw(); return; }
+      sat.pos = e.data.out; sat.t0 = e.data.t; sat.ok = e.data.ok; requestDraw();
+    };
+    worker.postMessage({ tles: list.map(s => [s.l1, s.l2]) });
+  }).catch(() => { satLoading = false; });
+}
+function satTick() {                                // ask the worker for fresh positions every 3 s while in use
+  if (!sat || !sat.ready) return;
+  sat.worker.postMessage({ t: Date.now() + 1500 });
+  clearTimeout(satTimer); satTimer = setTimeout(satTick, 3000);
+}
+function satEcl(i, now) {                           // current ecliptic position (AU) of satellite i, relative to Earth
+  const p = sat.pos, j = i * 6, dt = (now - sat.t0) / 1000;
+  return eqToEclKm(p[j] + p[j + 3] * dt, p[j + 1] + p[j + 4] * dt, p[j + 2] + p[j + 5] * dt);
+}
+function satNode(i) {
+  if (!sat.objs[i]) {
+    const s = sat.list[i], l2 = s.l2, incl = parseFloat(l2.slice(8, 16)), mm = parseFloat(l2.slice(52, 63)), ecc = parseFloat('0.' + l2.slice(26, 33));
+    sat.objs[i] = { id: `sat-${s.id}`, name: s.n, kind: 'satellite', satIndex: i, group: s.g, norad: s.id, incl, period_min: 1440 / mm, ecc,
+                    x: 0, y: 0, z: 0, color: sat.color[i], source: sat.source + ', TLE epoch ' + s.l1.slice(18, 32).trim() };
+  }
+  return sat.objs[i];
+}
+function satRefresh(n, now) {                        // keep a selected/hovered satellite's coordinates live
+  if (!sat || !sat.pos || n.satIndex == null) return;
+  const e = byId.earth, p = satEcl(n.satIndex, now), j = n.satIndex * 6, q = sat.pos;
+  n.x = e.x + p[0]; n.y = e.y + p[1]; n.z = e.z + p[2];
+  const dt = (now - sat.t0) / 1000;
+  n.alt_km = Math.hypot(q[j] + q[j + 3] * dt, q[j + 1] + q[j + 4] * dt, q[j + 2] + q[j + 5] * dt) - 6371;
+  n.speed_kms = Math.hypot(q[j + 3], q[j + 4], q[j + 5]);
+}
+function drawSatellites(earthPx) {
+  const e = byId.earth;
+  if (!e || !$('sats').checked || earthPx < 1.5) { if (sat) { sat.vis.fill(0); clearTimeout(satTimer); satTimer = null; } return 0; }
+  ensureSatellites();
+  if (!sat || !sat.pos) return 0;
+  if (!satTimer) satTick();
+  const now = Date.now(), showStarlink = $('starlink').checked;
+  const [ex, ey, ed] = proj3(...pos(e));
+  const rr = earthPx * earthPx;
+  let drawn = 0;
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < sat.n; i++) {
+    const j = i * 6;
+    if (Number.isNaN(sat.pos[j]) || (!showStarlink && sat.group[i] === 'starlink')) { sat.vis[i] = 0; continue; }
+    const p = satEcl(i, now), [sx, sy, d] = proj3(e.x + p[0], e.y + p[1], e.z + p[2]);
+    if (sx < -10 || sy < -10 || sx > W + 10 || sy > H + 10 || (d < ed && (sx - ex) ** 2 + (sy - ey) ** 2 < rr)) { sat.vis[i] = 0; continue; }
+    sat.vis[i] = 1; sat.sx[i] = sx; sat.sy[i] = sy;
+    const g = sat.group[i], big = g === 'stations' || g === 'science';
+    ctx.fillStyle = sat.color[i];
+    if (big) { ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    else ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    drawn++;
+  }
+  if (satTrack && sat.list[satTrack.i]) {           // one orbit ahead for the selected satellite
+    ctx.strokeStyle = 'rgba(127,209,255,0.55)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let k = 0, first = true; k < satTrack.pts.length; k += 3) {
+      if (Number.isNaN(satTrack.pts[k])) continue;
+      const p = eqToEclKm(satTrack.pts[k], satTrack.pts[k + 1], satTrack.pts[k + 2]), [sx, sy] = proj3(e.x + p[0], e.y + p[1], e.z + p[2]);
+      first ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy); first = false;
+    }
+    ctx.stroke();
+  }
+  // periodic redraw so the satellites keep moving even when the mouse is still
+  clearTimeout(drawSatellites.timer); drawSatellites.timer = setTimeout(requestDraw, 1000);
+  return drawn;
+}
+
 function draw() {
   updateCamera();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -572,7 +689,7 @@ function draw() {
   beginPixelLayer();
   if (stars) { if (showStars) drawCloud(stars, bigDots); else stars.vis.fill(0); }
   let gaiaStars = 0;
-  if (showStars && $('gaia').checked) {
+  if (showStars && widthLy > 0.05 && $('gaia').checked) {
     ensureTileIndex();
     if (tileIndex) { tileTick++; activeTiles = selectTiles(tierForWidth(widthLy)); for (const t of activeTiles) { drawCloud(t, bigDots); gaiaStars += t.n; } }
   } else { for (const t of activeTiles) t.vis.fill(0); activeTiles = []; }
@@ -604,6 +721,12 @@ function draw() {
   }
   drawn.sort((a, b) => a[4] - b[4]);
   for (const [sx, sy, n, r] of drawn) { drawMarker(n, sx, sy, r); screenPos.push([sx, sy, n, r]); labelCands.push([sx, sy, n, r]); }
+  const satsDrawn = drawSatellites(byId.earth ? (6371 / AU_KM) * scale : 0);
+  if (sat && satsDrawn) {
+    const now = Date.now();
+    for (const n of [selected, hover]) if (n && n.kind === 'satellite') satRefresh(n, now);
+    for (let i = 0; i < sat.n; i++) if (sat.vis[i] && SAT_LABEL.has(sat.list[i].n)) labelCands.push([sat.sx[i], sat.sy[i], satNode(i), 2.5]);
+  }
 
   // labels: planets first, then landmarks, then stars brightest-first; skip overlapping labels
   ctx.font = '12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -619,6 +742,7 @@ function draw() {
     if (!show && (n.kind === 'star' || (n.kind === 'galaxy' && n.note == null))) show = starLabelsLeft > 0;
     else if (!show && DEEP.has(n.kind)) show = true;
     else if (!show && n.kind === 'cepheid') show = false;
+    else if (!show && n.kind === 'satellite') show = true;
     else if (!show) {
       show = true;
       const parent = edges.find(e => e.src === n.id && e.rel === 'orbits');
@@ -632,7 +756,7 @@ function draw() {
     if (!forced && overlaps(lx, ly, w, 14)) continue;
     placed.push([lx, ly, w, 14]);
     if ((n.kind === 'star' || (n.kind === 'galaxy' && n.note == null)) && !forced) starLabelsLeft--;
-    ctx.fillStyle = n === selected ? '#ffffff' : n.kind === 'star' ? '#aab4cc' : isLandmark(n) ? n.color : DEEP.has(n.kind) ? '#9fb0d8' : '#e9edf5';
+    ctx.fillStyle = n === selected ? '#ffffff' : n.kind === 'star' ? '#aab4cc' : isLandmark(n) ? n.color : DEEP.has(n.kind) ? '#9fb0d8' : n.kind === 'satellite' ? '#cfe6ff' : '#e9edf5';
     ctx.fillText(n.name, lx, sy);
   }
 
@@ -658,7 +782,8 @@ function draw() {
   $('scaleText').textContent = `Locked on ${c.name || '—'} · tilt ${tilt}° · azimuth ${az}°` +
     ` · view width ${fmtDist(W / scale)} · epoch ${meta.epoch || '—'} UTC` +
     (gaiaStars ? ` · Gaia: ${activeTiles.length} tiles, ${gaiaStars.toLocaleString()} stars` : '') +
-    (densityVoxels ? ` · density: ${densityVoxels.toLocaleString()} voxels` : '');
+    (densityVoxels ? ` · density: ${densityVoxels.toLocaleString()} voxels` : '') +
+    (satsDrawn ? ` · ${satsDrawn.toLocaleString()} satellites live (CelesTrak)` : '');
 }
 
 // ------------------------------------------------------------- interaction
@@ -717,6 +842,11 @@ function pick(mx, my) {
     const d = Math.hypot(sx - mx, sy - my) - Math.min(r, 8);
     if (d < bd) { bd = d; best = n; }
   }
+  if (sat && sat.pos) for (let i = 0; i < sat.n; i++) {
+    if (!sat.vis[i]) continue;
+    const d = Math.hypot(sat.sx[i] - mx, sat.sy[i] - my) - 2;
+    if (d < bd) { bd = d; best = satNode(i); }
+  }
   for (const c of [stars, gals, ...activeTiles]) {
     if (!c) continue;
     for (let i = 0; i < c.n; i++) {
@@ -764,15 +894,24 @@ function fmtYears(y) {
 }
 function select(n) {
   selected = n; $('info').style.display = 'block'; $('iName').textContent = n.name;
+  if (n.kind === 'satellite') satRefresh(n, Date.now());
   const c = byId[centerId] || { x: 0, y: 0, z: 0, name: 'center' };
   const dCenter = Math.hypot(n.x - c.x, n.y - c.y, n.z - c.z), dSun = Math.hypot(n.x, n.y, n.z);
-  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star' }[n.kind] || n.kind;
+  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite' }[n.kind] || n.kind;
   const catalog = n.kind === 'galaxy' && n.note == null;
   const rows = [], sect = t => rows.push([null, t]);
   const f = FACTS[n.id];
   $('iSub').textContent = kindName + (n.con ? ` in ${n.con}` : '') + (n.source ? ` · ${n.source.split(';')[0].split(' (')[0]}` : '');
   $('iNote').textContent = n.note || (f ? f.blurb : '');
 
+  if (n.kind === 'satellite') {
+    satRefresh(n, Date.now());
+    if (sat && sat.worker) sat.worker.postMessage({ track: n.satIndex, t: Date.now(), periodMs: n.period_min * 60000, steps: 120 });
+    sect('Orbit');
+    rows.push(['Altitude', Math.round(n.alt_km).toLocaleString() + ' km'], ['Speed', n.speed_kms.toFixed(2) + ' km/s'],
+              ['Period', n.period_min < 120 ? n.period_min.toFixed(1) + ' min' : (n.period_min / 60).toFixed(2) + ' h'],
+              ['Inclination', n.incl.toFixed(1) + '°'], ['Group', n.group], ['NORAD ID', n.norad]);
+  }
   sect('Distance');
   if (n.id !== centerId) rows.push([`From ${c.name}`, fmtDist(dCenter)]);
   if (n.kind !== 'sun' && centerId !== 'sun') rows.push(['From the Sun', fmtDist(dSun)]);
@@ -829,14 +968,17 @@ function select(n) {
 
   $('iBody').innerHTML = rows.map(([k, v]) => k === null ? `<dt class="sect" style="grid-column:1/-1">${v}</dt>` : `<dt>${k}</dt><dd>${v}</dd>`).join('');
   const q = encodeURIComponent(n.name.replace(/\s*\(.*\)$/, ''));
-  $('iLinks').innerHTML = catalog
+  $('iLinks').innerHTML = n.kind === 'satellite'
+    ? `<a target="_blank" rel="noopener" href="https://www.n2yo.com/satellite/?s=${n.norad}">Track on N2YO ↗</a>` +
+      `<a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Special:Search?search=${q}">Wikipedia ↗</a>`
+    : catalog
     ? `<a target="_blank" rel="noopener" href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=${encodeURIComponent(n.name)}">SIMBAD ↗</a>` +
       `<a target="_blank" rel="noopener" href="https://ned.ipac.caltech.edu/byname?objname=${encodeURIComponent(n.name)}">NED ↗</a>`
     : `<a target="_blank" rel="noopener" href="https://en.wikipedia.org/wiki/Special:Search?search=${q}">Wikipedia ↗</a>` +
       (n.kind === 'star' || DEEP.has(n.kind) ? `<a target="_blank" rel="noopener" href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=${q}">SIMBAD ↗</a>` : '');
   draw();
 }
-function deselect() { selected = null; $('info').style.display = 'none'; draw(); }
+function deselect() { selected = null; satTrack = null; $('info').style.display = 'none'; draw(); }
 $('iClose').onclick = deselect;
 $('iCenter').onclick = () => selected && setCenter(selected.id);
 $('menu').onclick = () => $('controls').classList.toggle('open');
@@ -851,11 +993,11 @@ $('search').addEventListener('change', e => {
     draw();
   }
 });
-document.querySelectorAll('.presets button').forEach(b => b.onclick = () => setWidthAU(+b.dataset.au));
+document.querySelectorAll('.presets button').forEach(b => b.onclick = () => { if (b.dataset.lock && byId[b.dataset.lock]) setCenter(b.dataset.lock); setWidthAU(+b.dataset.au); });
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }
-['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids'].forEach(id => $(id).onchange = draw);
+['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids', 'sats', 'starlink'].forEach(id => $(id).onchange = draw);
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === '+' || e.key === '=') zoom(1.4);

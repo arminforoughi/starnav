@@ -18,6 +18,9 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
   drawn as an additive glow, plus a standard exponential-disk + four-arm spiral model calibrated to Gaia's
   local density for the parts of the galaxy Gaia cannot see (`docs/galaxy.bin`). Toggle "Model disk" to
   see only what is measured.
+- **Satellites**: ~11,600 Earth satellites (ISS, Hubble, GPS, Galileo, weather, geostationary, Starlink) from
+  CelesTrak orbital elements refreshed daily, propagated live in the browser with SGP4 (satellite.js in a
+  web worker). Lock on Earth and use the "Earth orbit" preset; click a satellite for its orbit.
 - **Cepheids**: 2,214 classical Cepheids across the whole disk, including the far side, from the OGLE
   Milky Way map (Skowron+ 2019, VizieR) with period-luminosity distances.
 - **Landmarks**: known black holes (Sagittarius A*, Gaia BH1/BH2/BH3, Cygnus X-1, V404 Cygni, …),
