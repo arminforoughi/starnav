@@ -18,6 +18,10 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
   drawn as an additive glow, plus a standard exponential-disk + four-arm spiral model calibrated to Gaia's
   local density for the parts of the galaxy Gaia cannot see (`docs/galaxy.bin`). Toggle "Model disk" to
   see only what is measured.
+- **Planet surfaces**: equirectangular maps from [Solar System Scope](https://www.solarsystemscope.com/textures/)
+  (CC BY 4.0) wrapped onto each globe per pixel, lit by the Sun with the true phase, spun about the real
+  pole; Earth is aligned to sidereal time, the Moon keeps its near side to Earth, Saturn gets its rings
+  with the planet's shadow.
 - **Satellites**: ~11,600 Earth satellites (ISS, Hubble, GPS, Galileo, weather, geostationary, Starlink) from
   CelesTrak orbital elements refreshed daily, propagated live in the browser with SGP4 (satellite.js in a
   web worker). Lock on Earth and use the "Earth orbit" preset; click a satellite for its orbit.

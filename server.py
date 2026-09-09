@@ -534,7 +534,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def translate_path(self, path):
         clean = urllib.parse.urlparse(path).path
-        if clean.startswith("/tiles/") or clean in ("/galaxy.bin", "/galaxy_lo.bin", "/satellites.json"):
+        if clean.startswith("/tiles/") or clean.startswith("/tex/") or clean in ("/galaxy.bin", "/galaxy_lo.bin", "/satellites.json"):
             return os.path.join(ROOT, "docs", clean.lstrip("/"))       # built by build_tiles.py
         return super().translate_path(path)
 

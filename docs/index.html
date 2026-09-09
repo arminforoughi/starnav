@@ -219,6 +219,103 @@ function ringPath(cx, cy, cz, r, basis = ECL) {   // circle of radius r in a pla
 }
 
 // ------------------------------------------------------------- drawing
+// ------------------------------------------------------------- textured globes
+// Equirectangular maps (Solar System Scope, CC BY 4.0) wrapped per pixel onto each disc, lit by the
+// Sun with the real phase, spun about the body's true pole. Earth's map is aligned to the current
+// sidereal time so the continents facing the Sun are the ones actually in daylight right now.
+const TEX = { sun: 'sun', mercury: 'mercury', venus: 'venus', earth: 'earth', moon: 'moon', mars: 'mars',
+              jupiter: 'jupiter', saturn: 'saturn', uranus: 'uranus', neptune: 'neptune' };
+// north pole RA, Dec (J2000, IAU) and sidereal rotation period in hours (negative = retrograde)
+const POLES = { sun: [286.13, 63.87, 609.1], mercury: [281.01, 61.45, 1407.5], venus: [272.76, 67.16, -5832.5],
+                earth: [0, 90, 23.934], moon: [266.86, 65.64, 655.7], mars: [317.68, 52.89, 24.62], jupiter: [268.06, 64.50, 9.925],
+                saturn: [40.59, 83.54, 10.66], uranus: [257.31, -15.18, -17.24], neptune: [299.36, 43.46, 16.11] };
+const texCache = {};
+function ensureTexture(id, ext = 'jpg') {
+  if (texCache[id] !== undefined) return texCache[id];
+  texCache[id] = 'loading';
+  const img = new Image();
+  img.onload = () => {
+    const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+    const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
+    texCache[id] = { w: img.width, h: img.height, d: g.getImageData(0, 0, img.width, img.height).data }; requestDraw();
+  };
+  img.onerror = () => { texCache[id] = null; };
+  img.src = `tex/${id}.${ext}`;
+  return 'loading';
+}
+function eqToEcl(x, y, z) { const e = 23.4392911 * Math.PI / 180, c = Math.cos(e), s = Math.sin(e); return [x, y * c + z * s, -y * s + z * c]; }
+const norm3 = v => { const L = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / L, v[1] / L, v[2] / L]; };
+function gmstRad() { const jd = Date.now() / 86400000 + 2440587.5; return ((280.46061837 + 360.98564736629 * (jd - 2451545.0)) % 360) * Math.PI / 180; }
+function bodyFrame(n) {                            // [X (lon 0), Y (lon 90 E), N (north pole)] in ecliptic coords
+  const P = POLES[n.id]; if (!P) return null;
+  const N = n.id === 'earth' ? eqToEcl(0, 0, 1) : radecUnit(P[0], P[1]);
+  let X;
+  if (n.id === 'earth') { const g = gmstRad(); X = eqToEcl(Math.cos(g), Math.sin(g), 0); }
+  else if (n.id === 'moon' && byId.earth) { const e = byId.earth, v = [e.x - n.x, e.y - n.y, e.z - n.z], k = v[0] * N[0] + v[1] * N[1] + v[2] * N[2]; X = norm3([v[0] - k * N[0], v[1] - k * N[1], v[2] - k * N[2]]); }
+  else {
+    let ref = cross(N, [0, 0, 1]); if (Math.hypot(...ref) < 1e-3) ref = cross(N, [1, 0, 0]); ref = norm3(ref);
+    const ref2 = cross(N, ref), w = 2 * Math.PI * ((Date.now() / 3.6e6 / P[2]) % 1);
+    X = [ref[0] * Math.cos(w) + ref2[0] * Math.sin(w), ref[1] * Math.cos(w) + ref2[1] * Math.sin(w), ref[2] * Math.cos(w) + ref2[2] * Math.sin(w)];
+  }
+  return [X, cross(N, X), N];
+}
+let globeBuf = null;
+function drawTextured(n, sx, sy, r) {
+  const tex = ensureTexture(TEX[n.id]); if (!tex || tex === 'loading') return false;
+  const F = bodyFrame(n); if (!F) return false;
+  const isSaturn = n.id === 'saturn', ring = isSaturn ? ensureTexture('saturn_ring', 'png') : null;
+  const hasRing = ring && ring !== 'loading';
+  const ext = hasRing ? 2.35 : 1.0;                 // render extent in body radii
+  const rr = Math.min(r, hasRing ? 190 : 340), size = Math.ceil(rr * ext * 2) + 2, half = size / 2;
+  if (!globeBuf || globeBuf.size !== size) { const cv = document.createElement('canvas'); cv.width = cv.height = size; globeBuf = { size, cv, g: cv.getContext('2d') }; globeBuf.img = globeBuf.g.createImageData(size, size); }
+  const d = globeBuf.img.data; d.fill(0);
+  const [X, Y, N] = F, T = tex.d, tw = tex.w, th = tex.h;
+  const p0 = pos(n), L = Math.hypot(p0[0], p0[1], p0[2]) || 1, s = [-p0[0] / L, -p0[1] / L, -p0[2] / L], lit = n.kind !== 'sun';
+  const r0 = R[0], r1 = R[1], r2 = R[2], r3 = R[3], r4 = R[4], r5 = R[5], r6 = R[6], r7 = R[7], r8 = R[8];
+  const Nc = hasRing ? [r0 * N[0] + r1 * N[1] + r2 * N[2], r3 * N[0] + r4 * N[1] + r5 * N[2], r6 * N[0] + r7 * N[1] + r8 * N[2]] : null;
+  const ringLight = hasRing ? 0.25 + 0.75 * Math.abs(s[0] * N[0] + s[1] * N[1] + s[2] * N[2]) : 0;
+  for (let py = 0; py < size; py++) {
+    const y = -(py + 0.5 - half) / rr;
+    for (let px = 0; px < size; px++) {
+      const x = (px + 0.5 - half) / rr, q = x * x + y * y, i = (py * size + px) * 4;
+      let onPlanet = q < 1.0, z = onPlanet ? Math.sqrt(1 - q) : 0;
+      if (onPlanet) {
+        const ex = r0 * x + r3 * y + r6 * z, ey = r1 * x + r4 * y + r7 * z, ez = r2 * x + r5 * y + r8 * z;   // camera -> ecliptic
+        const lon = Math.atan2(ex * Y[0] + ey * Y[1] + ez * Y[2], ex * X[0] + ey * X[1] + ez * X[2]);
+        const lat = Math.asin(Math.max(-1, Math.min(1, ex * N[0] + ey * N[1] + ez * N[2])));
+        const u = ((Math.floor((lon / (2 * Math.PI) + 0.5) * tw) % tw) + tw) % tw, v = Math.min(th - 1, Math.max(0, Math.floor((0.5 - lat / Math.PI) * th)));
+        const k = (v * tw + u) * 4;
+        let l = 1;
+        if (lit) { const c = ex * s[0] + ey * s[1] + ez * s[2]; l = 0.05 + 0.95 * Math.max(0, Math.min(1, (c + 0.04) / 0.16)) * Math.max(0.35, c); }
+        const edge = Math.min(1, (1 - Math.sqrt(q)) * rr * 1.5);
+        d[i] = T[k] * l; d[i + 1] = T[k + 1] * l; d[i + 2] = T[k + 2] * l; d[i + 3] = 255 * edge;
+      }
+      if (hasRing && Math.abs(Nc[2]) > 0.02) {       // ring plane: (x, y, zr) . Nc = 0
+        const zr = -(x * Nc[0] + y * Nc[1]) / Nc[2], rho = Math.sqrt(q + zr * zr);
+        if (rho >= 1.2 && rho <= 2.3 && !(onPlanet && zr < 0)) {
+          const rk = Math.min(ring.w - 1, Math.floor((rho - 1.2) / 1.1 * ring.w)) * 4, a = ring.d[rk + 3] / 255;
+          if (a > 0.02) {
+            // planet shadow on the rings: behind the planet along the Sun direction and inside its cylinder
+            const ex = r0 * x + r3 * y + r6 * zr, ey = r1 * x + r4 * y + r7 * zr, ez = r2 * x + r5 * y + r8 * zr;
+            const along = ex * s[0] + ey * s[1] + ez * s[2];
+            const perp = Math.hypot(ex - along * s[0], ey - along * s[1], ez - along * s[2]);
+            const shade = (along < 0 && perp < 1) ? 0.12 : ringLight;
+            const cr = ring.d[rk] * shade, cg = ring.d[rk + 1] * shade, cb = ring.d[rk + 2] * shade;
+            const a0 = d[i + 3] / 255;                // composite over whatever is there (planet or nothing)
+            d[i] = cr * a + d[i] * (1 - a); d[i + 1] = cg * a + d[i + 1] * (1 - a); d[i + 2] = cb * a + d[i + 2] * (1 - a);
+            d[i + 3] = 255 * (a + a0 * (1 - a));
+          }
+        }
+      }
+    }
+  }
+  globeBuf.g.putImageData(globeBuf.img, 0, 0);
+  const k = r / rr;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(globeBuf.cv, sx - half * k, sy - half * k, size * k, size * k);
+  if (n.id === 'earth') { ctx.globalAlpha = 0.25; ctx.strokeStyle = '#7fb4ff'; ctx.lineWidth = Math.max(1, r * 0.02); ctx.beginPath(); ctx.arc(sx, sy, r * 1.01, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
+  return true;
+}
 function drawPhase(n, sx, sy, r) {
   // Sunlit side of a planet or moon. The terminator is a great circle perpendicular to the Sun
   // direction; projected, it is an ellipse of half-width r*|sz|, where sz is how much the Sun
@@ -269,11 +366,17 @@ function drawMarker(n, sx, sy, r) {
   } else if (n.kind === 'cepheid') {
     ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+  } else if (SOLAR.has(n.kind) && r > 6 && TEX[n.id] && drawTextured(n, sx, sy, r)) {
+    if (n.kind === 'sun') {                           // corona: soft radial glow instead of a flat disc
+      const g = ctx.createRadialGradient(sx, sy, r, sx, sy, r * 2.4);
+      g.addColorStop(0, 'rgba(255,210,120,0.45)'); g.addColorStop(0.3, 'rgba(255,190,90,0.15)'); g.addColorStop(1, 'rgba(255,170,60,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r * 2.4, 0, Math.PI * 2); ctx.fill();
+    }
   } else if (SOLAR.has(n.kind) && n.kind !== 'sun' && r > 3) {
     drawPhase(n, sx, sy, r);
   } else {
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
-    if (n.kind === 'sun' || (n.kind === 'star' && n.mag < 1)) {
+    if ((n.kind === 'sun' && r <= 6) || (n.kind === 'star' && n.mag < 1)) {
       ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     }
   }
@@ -737,6 +840,7 @@ function draw() {
   drawn.sort((a, b) => a[4] - b[4]);
   for (const [sx, sy, n, r] of drawn) { drawMarker(n, sx, sy, r); screenPos.push([sx, sy, n, r]); labelCands.push([sx, sy, n, r]); }
   const satsDrawn = drawSatellites(byId.earth ? (6371 / AU_KM) * scale : 0);
+  if (drawn.some(([, , n, r]) => SOLAR.has(n.kind) && r > 6)) { clearTimeout(draw.spinTimer); draw.spinTimer = setTimeout(requestDraw, 1000); }
   if (sat && satsDrawn) {
     const now = Date.now();
     for (const n of [selected, hover]) if (n && n.kind === 'satellite') satRefresh(n, now);
@@ -980,6 +1084,7 @@ function select(n) {
   const sc = skyCoords(n); if (sc) rows.push(['Sky position (RA, Dec)', sc]);
   rows.push(['x / y / z', [n.x, n.y, n.z].map(v => Math.abs(v) < 1e4 ? v.toFixed(3) : v.toExponential(2)).join(' / ') + ' AU']);
   rows.push(['Data source', n.source]);
+  if (TEX[n.id]) rows.push(['Surface map', 'Solar System Scope (CC BY 4.0)']);
 
   $('iBody').innerHTML = rows.map(([k, v]) => k === null ? `<dt class="sect" style="grid-column:1/-1">${v}</dt>` : `<dt>${k}</dt><dd>${v}</dd>`).join('');
   const q = encodeURIComponent(n.name.replace(/\s*\(.*\)$/, ''));
