@@ -219,6 +219,25 @@ function ringPath(cx, cy, cz, r, basis = ECL) {   // circle of radius r in a pla
 }
 
 // ------------------------------------------------------------- drawing
+function drawPhase(n, sx, sy, r) {
+  // Sunlit side of a planet or moon. The terminator is a great circle perpendicular to the Sun
+  // direction; projected, it is an ellipse of half-width r*|sz|, where sz is how much the Sun
+  // direction points toward the viewer. Gibbous when sz > 0, crescent when sz < 0.
+  const p = pos(n), dx = -p[0], dy = -p[1], dz = -p[2], L = Math.hypot(dx, dy, dz) || 1;
+  const ux = (R[0] * dx + R[1] * dy + R[2] * dz) / L, uy = -(R[3] * dx + R[4] * dy + R[5] * dz) / L, uz = (R[6] * dx + R[7] * dy + R[8] * dz) / L;
+  ctx.save(); ctx.translate(sx, sy); ctx.rotate(Math.atan2(uy, ux));
+  if (n.id === 'earth') { ctx.globalAlpha = 0.35; ctx.fillStyle = '#7fb4ff'; ctx.beginPath(); ctx.arc(0, 0, r * 1.04, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
+  ctx.fillStyle = '#0b1020'; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();   // night side
+  const a = Math.max(0.01, Math.abs(uz) * r);
+  ctx.beginPath(); ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2);                                // sunward limb
+  if (uz >= 0) ctx.ellipse(0, 0, a, r, 0, Math.PI / 2, 3 * Math.PI / 2, false);             // terminator, far side
+  else ctx.ellipse(0, 0, a, r, 0, Math.PI / 2, -Math.PI / 2, true);                          // terminator, near side
+  ctx.closePath();
+  const g = ctx.createRadialGradient(r * 0.45, 0, 0, 0, 0, r * 1.05);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(0.15, n.color); g.addColorStop(1, n.color);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+}
 function drawMarker(n, sx, sy, r) {
   ctx.fillStyle = n.color || '#fff';
   if (n.kind === 'blackhole') {
@@ -250,13 +269,9 @@ function drawMarker(n, sx, sy, r) {
   } else if (n.kind === 'cepheid') {
     ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+  } else if (SOLAR.has(n.kind) && n.kind !== 'sun' && r > 3) {
+    drawPhase(n, sx, sy, r);
   } else {
-    if (r > 14 && SOLAR.has(n.kind)) {                // zoomed-in planet: shaded disc with a limb
-      const g = ctx.createRadialGradient(sx - r * 0.35, sy - r * 0.35, 0, sx, sy, r);
-      g.addColorStop(0, '#dfe9ff'); g.addColorStop(0.08, n.color); g.addColorStop(0.75, n.color); g.addColorStop(1, '#0a1020');
-      ctx.fillStyle = g;
-      if (n.id === 'earth') { ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.arc(sx, sy, r * 1.04, 0, Math.PI * 2); ctx.fillStyle = '#7fb4ff'; ctx.fill(); ctx.globalAlpha = 1; ctx.fillStyle = g; }
-    }
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
     if (n.kind === 'sun' || (n.kind === 'star' && n.mag < 1)) {
       ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
