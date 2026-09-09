@@ -284,7 +284,7 @@ function drawTextured(n, sx, sy, r) {
         const lat = Math.asin(Math.max(-1, Math.min(1, ex * N[0] + ey * N[1] + ez * N[2])));
         const u = ((Math.floor((lon / (2 * Math.PI) + 0.5) * tw) % tw) + tw) % tw, v = Math.min(th - 1, Math.max(0, Math.floor((0.5 - lat / Math.PI) * th)));
         const k = (v * tw + u) * 4;
-        let l = 1;
+        let l = lit ? 1 : 1.32;                       // the Sun: boosted, clamped by the byte store
         if (lit) { const c = ex * s[0] + ey * s[1] + ez * s[2]; l = 0.05 + 0.95 * Math.max(0, Math.min(1, (c + 0.04) / 0.16)) * Math.max(0.35, c); }
         const edge = Math.min(1, (1 - Math.sqrt(q)) * rr * 1.5);
         d[i] = T[k] * l; d[i + 1] = T[k + 1] * l; d[i + 2] = T[k + 2] * l; d[i + 3] = 255 * edge;
@@ -367,9 +367,9 @@ function drawMarker(n, sx, sy, r) {
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
   } else if (SOLAR.has(n.kind) && r > 6 && TEX[n.id] && drawTextured(n, sx, sy, r)) {
     if (n.kind === 'sun') {                           // corona: soft radial glow instead of a flat disc
-      const g = ctx.createRadialGradient(sx, sy, r, sx, sy, r * 2.4);
-      g.addColorStop(0, 'rgba(255,210,120,0.45)'); g.addColorStop(0.3, 'rgba(255,190,90,0.15)'); g.addColorStop(1, 'rgba(255,170,60,0)');
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r * 2.4, 0, Math.PI * 2); ctx.fill();
+      const g = ctx.createRadialGradient(sx, sy, r * 0.98, sx, sy, r * 3);
+      g.addColorStop(0, 'rgba(255,235,170,0.9)'); g.addColorStop(0.12, 'rgba(255,205,110,0.4)'); g.addColorStop(0.4, 'rgba(255,180,80,0.12)'); g.addColorStop(1, 'rgba(255,160,50,0)');
+      ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r * 3, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'source-over';
     }
   } else if (SOLAR.has(n.kind) && n.kind !== 'sun' && r > 3) {
     drawPhase(n, sx, sy, r);
@@ -412,12 +412,30 @@ function makeCloud(list, rOf, wOf, fewMag, allMag) {
   });
   return c;
 }
+// temperature at subclass 0 for each spectral class (interpolated in log T by the subclass digit),
+// and a rough bolometric correction so hot and cool stars get their full output, not just visible light
+const SPEC_T0 = { O: 45000, B: 30000, A: 9700, F: 7200, G: 6000, K: 5200, M: 3800 }, SPEC_NEXT = { O: 'B', B: 'A', A: 'F', F: 'G', G: 'K', K: 'M', M: null };
+const SPEC_BC = { O: -3.5, B: -2.0, A: -0.2, F: -0.05, G: -0.1, K: -0.6, M: -1.7 };
+function specTemp(spect) {
+  const m = /^([OBAFGKM])(\d(?:\.\d)?)?/i.exec(spect || ''); if (!m) return 5700;
+  const c = m[1].toUpperCase(), d = m[2] != null ? Math.min(9.9, parseFloat(m[2])) : 5;
+  const t0 = SPEC_T0[c], t1 = SPEC_NEXT[c] ? SPEC_T0[SPEC_NEXT[c]] : 2500;
+  return Math.exp(Math.log(t0) + (Math.log(t1) - Math.log(t0)) * d / 10);
+}
+function starRadiusAU(n) {                          // R = sqrt(L_bol) (5772/T)^2 R_sun, L from absolute magnitude
+  if (n.mag == null || !n.dist_pc) return 0;
+  const c = ((n.spect || 'G')[0] || 'G').toUpperCase();
+  const M = n.mag - 5 * Math.log10(n.dist_pc / 10) + (SPEC_BC[c] || 0), L = 10 ** ((4.74 - M) / 2.5);
+  return Math.sqrt(L) * (5772 / specTemp(n.spect)) ** 2 * 0.00465;
+}
 function buildClouds() {
   stars = makeCloud(nodes.filter(n => n.kind === 'star'),
     s => Math.max(1.2, Math.min(6, 4.2 - s.mag * 0.75)), s => s.mag > 6.5 ? Math.max(0.35, 1 - (s.mag - 6.5) * 0.12) : 1, 4, 7);
   gals = makeCloud(nodes.filter(n => n.kind === 'galaxy' && n.note == null),
     s => Math.max(0.8, Math.min(3.5, 4 - (s.mag ?? 12) * 0.28)), () => 1, 11, 13);
   bigNodes = nodes.filter(n => n.kind !== 'star' && !(n.kind === 'galaxy' && n.note == null));
+  stars.rad = new Float32Array(stars.n);
+  stars.nodes.forEach((n, i) => { stars.rad[i] = starRadiusAU(n); });
 }
 function drawCloud(c, bigDots) {
   const { xyz, r, w, rgb, sx: SX, sy: SY, vis } = c;
@@ -431,6 +449,7 @@ function drawCloud(c, bigDots) {
     if (sx < -lim || sy < -lim || sx > W + lim || sy > H + lim) { vis[i] = 0; continue; }
     vis[i] = 1; SX[i] = sx; SY[i] = sy;
     const rr = r[i];
+    if (c.rad) { const tr = c.rad[i] * scale; if (tr > 2.5) { bigDots.push([sx, sy, cloudNode(c, i), Math.min(tr, 2e5), true]); continue; } }
     if (rr >= 2.2) { bigDots.push([sx, sy, cloudNode(c, i), rr]); continue; }
     if (!d) continue;
     const size = Math.max(1, Math.min(5, Math.round(rr * PD)));
@@ -812,7 +831,17 @@ function draw() {
   } else { for (const t of activeTiles) t.vis.fill(0); activeTiles = []; }
   if (gals) { if (showCatalogGalaxies) drawCloud(gals, bigDots); else gals.vis.fill(0); }
   endPixelLayer();
-  for (const [sx, sy, n, r] of bigDots) {           // bright stars: real discs above the pixel layer
+  for (const [sx, sy, n, r, trueSize] of bigDots) {  // bright stars: real discs above the pixel layer
+    if (trueSize) {                                   // star at its actual size: photosphere + corona
+      const col = n.color || '#fff';
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(0.55, col); g.addColorStop(1, col);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      const h = ctx.createRadialGradient(sx, sy, r * 0.98, sx, sy, r * 2.2);
+      h.addColorStop(0, col + 'b0'); h.addColorStop(0.3, col + '30'); h.addColorStop(1, col + '00');
+      ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = h; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'source-over';
+      continue;
+    }
     ctx.fillStyle = n.color || '#fff';
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
     if (n.kind === 'star' && n.mag < 1) { ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
@@ -1056,6 +1085,8 @@ function select(n) {
       rows.push(['Absolute magnitude', M.toFixed(2)]);
       rows.push(['Luminosity', (L >= 100 ? Math.round(L).toLocaleString() : L.toPrecision(3)) + ' × Sun']);
     }
+    const rad = starRadiusAU(n);
+    if (rad) rows.push(['Radius (estimated)', (rad / 0.00465 >= 10 ? Math.round(rad / 0.00465) : (rad / 0.00465).toFixed(2)) + ' × Sun' + (rad > 0.05 ? `, ${rad.toFixed(2)} AU` : '')]);
     if (n.spect) {
       const cls = SPECTRAL[n.spect[0].toUpperCase()], lum = LUMCLASS.find(([k]) => n.spect.includes(k));
       rows.push(['Spectral type', n.spect]);
