@@ -56,6 +56,7 @@
     #info { top: auto; bottom: 48px; right: 12px; left: 12px; width: auto; max-height: 55vh; }
     #legend { font-size: 10px; right: 12px; }
   }
+  .hidden-tour { display: none !important; }
   kbd { background: #1b2336; border: 1px solid #2f3a55; border-radius: 3px; padding: 0 4px; font: inherit; }
 </style>
 </head>
@@ -91,6 +92,12 @@
   <div class="row presets">
     <button data-lock="earth" data-au="7e-4">Earth orbit</button>
     <button data-lock="earth" data-au="6.5e-3">Earth–Moon</button>
+  </div>
+  <label>Tour</label>
+  <div class="row presets">
+    <button id="tourOut">▶ Zoom out</button>
+    <button id="tourIn">▶ Zoom in</button>
+    <button id="tourRec" title="Record the tour to a video file">● Record</button>
   </div>
   <label>View angle</label>
   <div class="row angles">
@@ -165,7 +172,7 @@ function tumble(dxPx, dyPx) {                      // rotate about the screen ax
 
 let C = { x: 0, y: 0, z: 0 }, zRef = 0, ZX = 1;
 function updateCamera() {
-  C = byId[centerId] || { x: 0, y: 0, z: 0 };
+  C = tourCenter || byId[centerId] || { x: 0, y: 0, z: 0 };
   ZX = $('exag').checked ? 10 : 1;
   zRef = SOLAR.has(C.kind) ? C.z : 0;             // exaggerate heights relative to the locked body's plane
 }
@@ -734,7 +741,114 @@ function drawSatellites(earthPx) {
   return drawn;
 }
 
+// ------------------------------------------------------------- cinematic tour + recorder
+// Keyframes: [lock body, view width (AU), tilt, azimuth, hold s, travel s, caption]. Between keyframes the
+// camera eases in log-zoom, angles and target position, so the lock hand-off from Earth to the Sun glides.
+const TOUR_OUT = [
+  ['earth', 2.6e-4, 35, 235, 3.0, 0, 'Earth · 11,600 satellites, live'],
+  ['earth', 6.5e-3, 35, 235, 2.0, 4, 'The Moon · 384,000 km · 1.3 light-seconds'],
+  ['sun', 3, 45, 235, 2.0, 5, 'The Sun · 150 million km · 8 light-minutes'],
+  ['sun', 80, 45, 235, 2.0, 3, 'Neptune · 4.5 billion km · 4 light-hours'],
+  ['sun', 1.6e6, 45, 235, 2.0, 4, 'Proxima Centauri · 4.2 light-years'],
+  ['sun', 6.5e6, 45, 235, 2.0, 3, 'Sirius · 8.6 ly       Vega · 25 ly'],
+  ['sun', 6.4e7, 45, 235, 2.0, 3, 'Betelgeuse · 500 ly       Pleiades · 444 ly'],
+  ['sun', 7.6e9, 60, 150, 3.0, 5, 'The Milky Way · we are 26,700 ly from its centre'],
+  ['sun', 4e11, 45, 150, 2.0, 4, 'Andromeda · 2.5 million light-years'],
+  ['sun', 3e13, 45, 150, 2.0, 4, 'Virgo Cluster · 54 Mly       Great Attractor · 220 Mly'],
+  ['sun', 1.6e14, 55, 235, 2.0, 3, '44,000 galaxies · out to 1 billion light-years'],
+  ['sun', 6e15, 55, 235, 4.0, 4, 'Edge of the observable universe · 46.5 billion light-years'],
+];
+let tour = null, tourCenter = null, rec = null, recTrack = null, recChunks = [], recArmed = false;
+const easeInOut = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+function buildTimeline(frames) {
+  const tl = []; let t = 0;
+  frames.forEach((f, i) => {
+    if (i > 0) { tl.push({ t0: t, t1: t + f[5], from: frames[i - 1], to: f, move: true }); t += f[5]; }
+    tl.push({ t0: t, t1: t + f[4], from: f, to: f, move: false, caption: f[6] }); t += f[4];
+  });
+  return { tl, total: t };
+}
+function startTour(dir) {
+  if (tour) return;
+  const frames = dir === 'in' ? TOUR_OUT.slice().reverse() : TOUR_OUT;
+  const { tl, total } = buildTimeline(frames);
+  selected = null; hover = null; $('info').style.display = 'none';
+  tour = { tl, total, start: performance.now(), dir, lastCaption: '' };
+  $('controls').classList.add('hidden-tour'); $('legend').classList.add('hidden-tour'); $('help').classList.add('hidden-tour');
+  if (recArmed) startRecording(dir);
+  tourFrame();
+}
+function stopTour() {
+  if (!tour) return;
+  tour = null; tourCenter = null;
+  $('controls').classList.remove('hidden-tour'); $('legend').classList.remove('hidden-tour'); $('help').classList.remove('hidden-tour');
+  if (rec) stopRecording();
+  draw();
+}
+function tourFrame() {
+  if (!tour) return;
+  const t = (performance.now() - tour.start) / 1000;
+  if (t >= tour.total) { stopTour(); return; }
+  const seg = tour.tl.find(s => t < s.t1) || tour.tl[tour.tl.length - 1];
+  const u = seg.move ? easeInOut((t - seg.t0) / (seg.t1 - seg.t0)) : 1;
+  const a = seg.from, b = seg.to;
+  const lw = Math.log10(a[1]) + (Math.log10(b[1]) - Math.log10(a[1])) * u;
+  const tilt = a[2] + (b[2] - a[2]) * u, az = a[3] + (b[3] - a[3]) * u;
+  const pa = byId[a[0]] || byId.sun, pb = byId[b[0]] || byId.sun;
+  tourCenter = { x: pa.x + (pb.x - pa.x) * u, y: pa.y + (pb.y - pa.y) * u, z: pa.z + (pb.z - pa.z) * u, kind: pb.kind, id: pb.id, name: pb.name };
+  centerId = b[0];
+  scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, W / Math.pow(10, lw)));
+  R = mul(rotX(tilt * Math.PI / 180), rotZ(az * Math.PI / 180));
+  tour.caption = seg.move ? '' : seg.caption;
+  tour.captionAlpha = seg.move ? Math.max(0, 1 - (t - seg.t0) / 0.6) * (a[6] ? 1 : 0) : Math.min(1, (t - seg.t0) / 0.6);
+  if (seg.move) tour.caption = a[6];
+  draw();
+  if (recTrack) recTrack.requestFrame();
+  if (document.hidden) setTimeout(tourFrame, 33); else requestAnimationFrame(tourFrame);
+}
+function drawTourOverlay() {
+  if (!tour) return;
+  const wl = W / scale;
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = 12;
+  ctx.globalAlpha = tour.captionAlpha ?? 1;
+  ctx.fillStyle = '#ffffff'; ctx.font = `600 ${Math.round(Math.min(34, W / 28))}px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif`;
+  ctx.fillText(tour.caption || '', W / 2, H - 78);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#b8c2d8'; ctx.font = `${Math.round(Math.min(18, W / 52))}px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif`;
+  ctx.fillText(`view width ${fmtDist(wl)}`, W / 2, H - 46);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#8fa3c8'; ctx.font = '13px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif';
+  ctx.fillText('starnav · real positions from Gaia, 2MASS, JPL, CelesTrak', 16, H - 16);
+  ctx.restore();
+}
+function startRecording(dir) {
+  if (!('MediaRecorder' in window) || !canvas.captureStream) { alert('Recording is not supported in this browser.'); return; }
+  const stream = canvas.captureStream(0); recTrack = stream.getVideoTracks()[0];
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+  rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: 16e6 });
+  recChunks = []; rec.ondataavailable = e => { if (e.data.size) recChunks.push(e.data); };
+  rec.onstop = () => saveRecording(dir, mime.includes('mp4') ? 'mp4' : 'webm');
+  rec.start(500);
+}
+function stopRecording() { try { rec.stop(); } catch (_) {} rec = null; recTrack = null; }
+async function saveRecording(dir, ext) {
+  const blob = new Blob(recChunks, { type: recChunks[0]?.type || 'video/webm' }); recChunks = [];
+  const name = `starnav-tour-${dir}.${ext}`;
+  if (!window.STATIC) {                              // local server: keep a copy in captures/
+    try { const r = await fetch(`/api/recording?name=${name}`, { method: 'POST', body: blob }); const j = await r.json(); $('status').textContent = `Recording saved: ${j.path} (${(j.bytes / 1e6).toFixed(1)} MB)`; return; } catch (_) {}
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  $('status').textContent = `Recording downloaded: ${name} (${(blob.size / 1e6).toFixed(1)} MB)`;
+}
+$('tourOut').onclick = () => startTour('out');
+$('tourIn').onclick = () => startTour('in');
+$('tourRec').onclick = () => { recArmed = !recArmed; $('tourRec').textContent = recArmed ? '● Record: on' : '● Record'; $('tourRec').style.background = recArmed ? '#5a1f2a' : ''; };
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && tour) stopTour(); });
+canvas.addEventListener('pointerdown', () => { if (tour) stopTour(); });
+
 function draw() {
+  if (!Number.isFinite(scale) || scale <= 0) scale = 60;   // never let a bad zoom poison every frame
   updateCamera();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = '#04060d'; ctx.fillRect(0, 0, W, H);
@@ -925,6 +1039,7 @@ function draw() {
   ctx.fillStyle = '#98a2b8'; ctx.textAlign = 'right'; ctx.font = '11px sans-serif';
   ctx.fillText(fmtDist(step), W - 24, by - 12);
 
+  drawTourOverlay();
   const tilt = Math.round(Math.acos(Math.max(-1, Math.min(1, R[8]))) * 180 / Math.PI);
   const az = Math.round(((Math.atan2(R[7], R[6]) * 180 / Math.PI) + 360) % 360);
   $('scaleText').textContent = `Locked on ${c.name || '—'} · tilt ${tilt}° · azimuth ${az}°` +
@@ -1144,7 +1259,7 @@ $('search').addEventListener('change', e => {
     draw();
   }
 });
-document.querySelectorAll('.presets button').forEach(b => b.onclick = () => { if (b.dataset.lock && byId[b.dataset.lock]) setCenter(b.dataset.lock); setWidthAU(+b.dataset.au); });
+document.querySelectorAll('.presets button[data-au]').forEach(b => b.onclick = () => { if (b.dataset.lock && byId[b.dataset.lock]) setCenter(b.dataset.lock); setWidthAU(+b.dataset.au); });
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }

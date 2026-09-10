@@ -2,3 +2,4 @@ starnav.db
 starnav.log
 nohup.out
 __pycache__/
+captures/

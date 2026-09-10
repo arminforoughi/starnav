@@ -597,6 +597,20 @@ class Handler(SimpleHTTPRequestHandler):
                 started = run_job(refresh_planets, epoch)
             return self.send_json({"ok": started, "status": dict(_state)},
                                   200 if started else 409)
+        if url.path == "/api/recording":            # the viewer's tour recorder uploads its video here
+            name = os.path.basename(q.get("name", ["tour.webm"])[0]) or "tour.webm"
+            length = int(self.headers.get("Content-Length", "0"))
+            os.makedirs(os.path.join(ROOT, "captures"), exist_ok=True)
+            path = os.path.join(ROOT, "captures", name)
+            with open(path, "wb") as f:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk); remaining -= len(chunk)
+            print(f"[starnav] saved recording {path} ({os.path.getsize(path)/1e6:.1f} MB)", flush=True)
+            return self.send_json({"ok": True, "path": path, "bytes": os.path.getsize(path)})
         return self.send_json({"error": "not found"}, 404)
 
 
