@@ -544,7 +544,7 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        if not self.path.startswith("/api/status"):
+        if not self.path.startswith(("/api/status", "/api/frame")):
             super().log_message(fmt, *args)
 
     def send_json(self, obj, code=200):
@@ -597,6 +597,14 @@ class Handler(SimpleHTTPRequestHandler):
                 started = run_job(refresh_planets, epoch)
             return self.send_json({"ok": started, "status": dict(_state)},
                                   200 if started else 409)
+        if url.path == "/api/frame":                # deterministic tour render: one JPEG frame per request
+            d = os.path.basename(q.get("dir", ["out"])[0]) or "out"
+            i = int(q.get("i", ["0"])[0])
+            folder = os.path.join(ROOT, "captures", f"frames-{d}"); os.makedirs(folder, exist_ok=True)
+            length = int(self.headers.get("Content-Length", "0"))
+            with open(os.path.join(folder, f"{i:05d}.jpg"), "wb") as f:
+                f.write(self.rfile.read(length))
+            return self.send_json({"ok": True})
         if url.path == "/api/recording":            # the viewer's tour recorder uploads its video here
             name = os.path.basename(q.get("name", ["tour.webm"])[0]) or "tour.webm"
             length = int(self.headers.get("Content-Length", "0"))
