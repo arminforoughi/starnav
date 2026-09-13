@@ -117,6 +117,8 @@
     <label><input type="checkbox" id="density" checked> Galaxy density</label>
     <label><input type="checkbox" id="model" checked> Model disk</label>
     <label><input type="checkbox" id="cepheids" checked> Cepheids</label>
+    <label><input type="checkbox" id="clusters" checked> Star clusters</label>
+    <label><input type="checkbox" id="exo" checked> Exoplanet hosts</label>
     <label><input type="checkbox" id="sats" checked> Satellites</label>
     <label><input type="checkbox" id="starlink" checked> Starlink</label>
   </div>
@@ -370,6 +372,19 @@ function drawMarker(n, sx, sy, r) {
       ctx.beginPath(); ctx.arc(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr, 1.3, 0, Math.PI * 2); ctx.fill();
     }
     ctx.beginPath(); ctx.arc(sx, sy, 1.5, 0, Math.PI * 2); ctx.fill();
+  } else if (n.kind === 'globular' || n.kind === 'opencluster') {
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3 + (n.kind === 'globular' ? 0 : 0.5), rr = i % 2 ? r * 0.9 : r * 0.55;
+      ctx.beginPath(); ctx.arc(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr, n.kind === 'globular' ? 1.2 : 0.9, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(sx, sy, n.kind === 'globular' ? 1.6 : 1.1, 0, Math.PI * 2); ctx.fill();
+  } else if (n.kind === 'abell') {
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+    g.addColorStop(0, 'rgba(255,179,217,0.7)'); g.addColorStop(1, 'rgba(255,179,217,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+  } else if (n.kind === 'exohost') {
+    if (W / scale / AU_PER_LY < 400) { ctx.strokeStyle = n.color; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(sx, sy, 1.3, 0, Math.PI * 2); ctx.fill();
   } else if (n.kind === 'cepheid') {
     ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
@@ -999,13 +1014,16 @@ function draw() {
       if (i != null && cloud.vis[i]) labelCands.push([cloud.sx[i], cloud.sy[i], n, cloud.r[i]]);
     }
   }
-  const showCepheids = $('cepheids').checked && widthLy > 3000;
+  const showCepheids = $('cepheids').checked && widthLy > 3000, showClusters = $('clusters').checked, showExo = $('exo').checked && widthLy < 6000;
+  const KIND_LOD = { globular: showClusters && widthLy < 4e5, opencluster: showClusters && widthLy < 4e4, abell: showClusters && widthLy > 3e7, exohost: showExo };
   for (const n of bigNodes) {
     if (n.kind === 'cepheid' && !showCepheids) continue;
+    if (n.kind in KIND_LOD && !KIND_LOD[n.kind]) continue;
     const [sx, sy, d] = proj(n);
     if (sx < -40 || sy < -40 || sx > W + 40 || sy > H + 40) continue;
     const r = DEEP.has(n.kind) ? (n.kind === 'galaxy' ? 7 : n.kind === 'gcluster' ? 9 : 5)
             : n.kind === 'cepheid' ? 1.5
+            : n.kind === 'globular' ? 4 : n.kind === 'opencluster' ? 3 : n.kind === 'abell' ? 5 + (n.mag || 0) : n.kind === 'exohost' ? 3.5
             : Math.max(n.kind === 'sun' ? 4 : 2.5, (n.radius_km / AU_KM) * scale);
     drawn.push([sx, sy, n, r, d]);
   }
@@ -1033,6 +1051,10 @@ function draw() {
     if (!show && (n.kind === 'star' || (n.kind === 'galaxy' && n.note == null))) show = starLabelsLeft > 0;
     else if (!show && DEEP.has(n.kind)) show = true;
     else if (!show && n.kind === 'cepheid') show = false;
+    else if (!show && n.kind === 'globular') show = W / scale / AU_PER_LY < 8e4 || /\(/.test(n.name);
+    else if (!show && n.kind === 'opencluster') show = W / scale / AU_PER_LY < 6000;
+    else if (!show && n.kind === 'exohost') show = W / scale / AU_PER_LY < 250;
+    else if (!show && n.kind === 'abell') show = (n.mag || 0) >= 3;
     else if (!show && n.kind === 'satellite') show = true;
     else if (!show) {
       show = true;
@@ -1047,7 +1069,7 @@ function draw() {
     if (!forced && overlaps(lx, ly, w, 14)) continue;
     placed.push([lx, ly, w, 14]);
     if ((n.kind === 'star' || (n.kind === 'galaxy' && n.note == null)) && !forced) starLabelsLeft--;
-    ctx.fillStyle = n === selected ? '#ffffff' : n.kind === 'star' ? '#aab4cc' : isLandmark(n) ? n.color : DEEP.has(n.kind) ? '#9fb0d8' : n.kind === 'satellite' ? '#cfe6ff' : '#e9edf5';
+    ctx.fillStyle = n === selected ? '#ffffff' : n.kind === 'star' ? '#aab4cc' : isLandmark(n) ? n.color : DEEP.has(n.kind) ? '#9fb0d8' : n.kind === 'satellite' ? '#cfe6ff' : ['globular', 'opencluster', 'abell', 'exohost'].includes(n.kind) ? n.color : '#e9edf5';
     ctx.fillText(n.name, lx, sy);
   }
 
@@ -1189,7 +1211,7 @@ function select(n) {
   if (n.kind === 'satellite') satRefresh(n, Date.now());
   const c = byId[centerId] || { x: 0, y: 0, z: 0, name: 'center' };
   const dCenter = Math.hypot(n.x - c.x, n.y - c.y, n.z - c.z), dSun = Math.hypot(n.x, n.y, n.z);
-  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite' }[n.kind] || n.kind;
+  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite', globular: 'globular cluster', opencluster: 'open cluster', abell: 'galaxy cluster', exohost: 'star with known planets' }[n.kind] || n.kind;
   const catalog = n.kind === 'galaxy' && n.note == null;
   const rows = [], sect = t => rows.push([null, t]);
   const f = FACTS[n.id];
@@ -1292,7 +1314,7 @@ document.querySelectorAll('.presets button[data-au]').forEach(b => b.onclick = (
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }
-['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids', 'sats', 'starlink'].forEach(id => $(id).onchange = draw);
+['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids', 'sats', 'starlink', 'clusters', 'exo'].forEach(id => $(id).onchange = draw);
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === '+' || e.key === '=') zoom(1.4);

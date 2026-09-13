@@ -326,6 +326,102 @@ def refresh_cepheids():
     set_status(f"Cepheids loaded: {len(rows)}.", False)
 
 
+EXTRA_SOURCES = {
+    "globular": VIZIER + "?-source=VII/202/catalog&-out.max=unlimited&-out=ID,Name,RAJ2000,DEJ2000,Rsun,Rgc,[Fe/H],MVt,Rh",
+    "opencluster": VIZIER + "?-source=J/A+A/640/A1/table1&-out.max=unlimited&-out=Cluster,RA_ICRS,DE_ICRS,DistPc,AgeNN,nbstars07,r50",
+    "abell": VIZIER + "?-source=VII/110A/table3&-out.max=unlimited&-out=ACO,_RA.icrs,_DE.icrs,z,Rich,Count",
+    "exohost": ("https://exoplanetarchive.ipac.caltech.edu/TAP/sync?format=csv&query=" + urllib.parse.quote(
+        "select hostname,ra,dec,sy_dist,sy_pnum,pl_name,pl_rade,pl_orbper,disc_year,discoverymethod "
+        "from pscomppars where sy_dist is not null")),
+}
+
+
+def refresh_extras():
+    """Globular + open clusters, Abell galaxy clusters, and exoplanet host stars (all small catalogs)."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows, errors = [], []
+    # --- globular clusters (Harris 2010)
+    try:
+        set_status("Downloading globular clusters (Harris, VizieR) ...", True)
+        for r in vizier_rows(EXTRA_SOURCES["globular"]):
+            d = fnum(r.get("Rsun"))
+            if not d: continue
+            x, y, z = radec_to_ecl_au(sexagesimal(r["RAJ2000"], True), sexagesimal(r["DEJ2000"], False), d * 1000)
+            name = (r.get("Name") or "").strip() or r["ID"].strip()
+            if name != r["ID"].strip(): name = f"{r['ID'].strip()} ({name})"
+            feh, mv, rgc = fnum(r.get("[Fe/H]")), fnum(r.get("MVt")), fnum(r.get("Rgc"))
+            note = "Globular cluster: an ancient ball of hundreds of thousands of stars orbiting in the Milky Way's halo." + \
+                   (f" Metal content {feh:+.2f} dex (very old, metal-poor)." if feh is not None and feh < -1 else (f" Metal content {feh:+.2f} dex." if feh is not None else "")) + \
+                   (f" Total brightness M_V = {mv:.1f}." if mv is not None else "") + (f" {rgc:.1f} kpc from the galactic centre." if rgc else "")
+            rows.append((f"gc-{r['ID'].strip().replace(' ', '')}", name, "globular", x, y, z, mv, "#ffd9a0", None, d * 1000, None, None,
+                         "Harris globular cluster catalog (2010 ed., VizieR)", note))
+    except Exception as e: errors.append(f"globular: {e}")
+    # --- open clusters (Cantat-Gaudin+ 2020, Gaia DR2 members)
+    try:
+        set_status("Downloading open clusters (Cantat-Gaudin+ 2020, VizieR) ...", True)
+        for r in vizier_rows(EXTRA_SOURCES["opencluster"]):
+            d = fnum(r.get("DistPc"))
+            if not d: continue
+            x, y, z = radec_to_ecl_au(float(r["RA_ICRS"]), float(r["DE_ICRS"]), d)
+            age, n = fnum(r.get("AgeNN")), fnum(r.get("nbstars07"))
+            yrs = 10 ** age if age else None
+            age_txt = "" if not yrs else (f" About {yrs/1e6:.0f} million years old." if yrs < 1e9 else f" About {yrs/1e9:.1f} billion years old.")
+            note = "Open cluster: a loose group of stars born together from one cloud, still travelling as a family." + age_txt + \
+                   (f" {int(n)} members identified by Gaia." if n else "")
+            rows.append((f"oc-{r['Cluster'].strip()}", r["Cluster"].strip().replace("_", " "), "opencluster", x, y, z, None, "#9ec5ff", None, d, None, None,
+                         "Cantat-Gaudin+ 2020 open clusters (Gaia DR2, VizieR)", note))
+    except Exception as e: errors.append(f"opencluster: {e}")
+    # --- Abell rich galaxy clusters with measured redshift
+    try:
+        set_status("Downloading Abell galaxy clusters (VizieR) ...", True)
+        for r in vizier_rows(EXTRA_SOURCES["abell"]):
+            zz = fnum(r.get("z"))
+            if not zz or zz <= 0: continue
+            d = zz * 299792.458 / H0                       # Mpc, Hubble law
+            x, y, z = radec_to_ecl_au(sexagesimal(r["_RA.icrs"], True), sexagesimal(r["_DE.icrs"], False), d * 1e6)
+            rich, cnt = r.get("Rich", "").strip(), r.get("Count", "").strip()
+            note = f"Abell galaxy cluster, richness class {rich or '?'} (0 = 30-49 galaxies, 5 = 300+)." + \
+                   (f" {cnt} galaxies counted in the survey." if cnt else "") + f" Redshift z = {zz:.4f}; distance from redshift, H0 = 70."
+            rows.append((f"abell-{r['ACO'].strip()}", f"Abell {r['ACO'].strip()}", "abell", x, y, z, fnum(rich), "#ffb3d9", None, d * 1e6, None, None,
+                         "Abell/ACO cluster catalog (1989, VizieR)", note))
+    except Exception as e: errors.append(f"abell: {e}")
+    # --- exoplanet host stars (NASA Exoplanet Archive)
+    try:
+        set_status("Downloading exoplanet hosts (NASA Exoplanet Archive) ...", True)
+        req = urllib.request.Request(EXTRA_SOURCES["exohost"], headers={"User-Agent": "starnav/1.0"})
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            text = resp.read().decode("utf-8", "replace")
+        hosts = {}
+        for r in csv.DictReader(io.StringIO(text)):
+            d = fnum(r.get("sy_dist"))
+            if not d: continue
+            h = hosts.setdefault(r["hostname"], {"ra": float(r["ra"]), "dec": float(r["dec"]), "d": d, "pl": []})
+            rade, per, yr = fnum(r.get("pl_rade")), fnum(r.get("pl_orbper")), fnum(r.get("disc_year"))
+            h["pl"].append((r["pl_name"], rade, per, yr, r.get("discoverymethod", "")))
+        for name, h in hosts.items():
+            x, y, z = radec_to_ecl_au(h["ra"], h["dec"], h["d"])
+            pl = sorted(h["pl"], key=lambda p: (p[2] or 1e9))
+            parts = []
+            for pn, rade, per, yr, meth in pl[:6]:
+                bits = []
+                if rade: bits.append(f"{rade:.1f} Earth radii")
+                if per: bits.append(f"{per:.1f}-day orbit" if per < 1000 else f"{per/365.25:.1f}-year orbit")
+                if yr: bits.append(f"found {int(yr)}")
+                parts.append(pn + (f" ({', '.join(bits)})" if bits else ""))
+            note = f"{len(pl)} known planet{'s' if len(pl) != 1 else ''}: " + "; ".join(parts) + ("; ..." if len(pl) > 6 else "") + "."
+            rows.append((f"exo-{name.replace(' ', '')}", name, "exohost", x, y, z, len(pl), "#7fe3ff", None, h["d"], None, None,
+                         "NASA Exoplanet Archive (composite planet table)", note))
+    except Exception as e: errors.append(f"exohost: {e}")
+    with db() as conn:
+        conn.execute("DELETE FROM nodes WHERE kind IN ('globular','opencluster','abell','exohost')")
+        conn.executemany("INSERT OR REPLACE INTO nodes(id,name,kind,x,y,z,mag,color,radius_km,dist_pc,"
+                         "spect,con,source,note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         [r + (now,) for r in rows])
+    set_meta("extras_updated", now)
+    counts = {k: sum(1 for r in rows if r[2] == k) for k in ("globular", "opencluster", "abell", "exohost")}
+    set_status(f"Extra catalogs loaded: {counts}" + (f"; errors: {errors}" if errors else ""), False)
+
+
 def refresh_landmarks():
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with db() as conn:
@@ -523,6 +619,8 @@ def seed_if_empty():
                 refresh_cepheids()
             except Exception as e:
                 errors.append(f"cepheids: {e}")
+        if count("kind IN ('globular','opencluster','abell','exohost')") == 0:
+            refresh_extras()
         set_status("Error: " + "; ".join(errors) if errors else "Ready.", False)
     run_job(job)
 
@@ -593,6 +691,8 @@ class Handler(SimpleHTTPRequestHandler):
                 started = run_job(refresh_galaxies)
             elif what == "cepheids":
                 started = run_job(refresh_cepheids)
+            elif what == "extras":
+                started = run_job(refresh_extras)
             else:
                 started = run_job(refresh_planets, epoch)
             return self.send_json({"ok": started, "status": dict(_state)},

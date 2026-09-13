@@ -25,6 +25,9 @@ A tiny star / planet navigation app. Pure Python standard library + one HTML fil
 - **Satellites**: ~11,600 Earth satellites (ISS, Hubble, GPS, Galileo, weather, geostationary, Starlink) from
   CelesTrak orbital elements refreshed daily, propagated live in the browser with SGP4 (satellite.js in a
   web worker). Lock on Earth and use the "Earth orbit" preset; click a satellite for its orbit.
+- **Star clusters and exoplanets**: 145 globular clusters (Harris 2010), 1,867 open clusters with Gaia distances
+  (Cantat-Gaudin+ 2020), 568 Abell galaxy clusters with redshifts, and 4,747 stars with known planets from the
+  NASA Exoplanet Archive (each card lists the planets). All via VizieR / IPAC TAP.
 - **Cepheids**: 2,214 classical Cepheids across the whole disk, including the far side, from the OGLE
   Milky Way map (Skowron+ 2019, VizieR) with period-luminosity distances.
 - **Landmarks**: known black holes (Sagittarius A*, Gaia BH1/BH2/BH3, Cygnus X-1, V404 Cygni, …),
@@ -93,3 +96,4 @@ Then `python3 build_tiles.py <dir with the two csv files>` (needs numpy) and `py
 - `POST /api/refresh?what=landmarks` – reload the built-in black hole / galaxy landmarks
 - `POST /api/refresh?what=galaxies` – re-download the galaxy catalogs from VizieR
 - `POST /api/refresh?what=cepheids` – re-download the Cepheid map from VizieR
+- `POST /api/refresh?what=extras` – re-download clusters and exoplanet hosts
