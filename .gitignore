@@ -3,3 +3,4 @@ starnav.log
 nohup.out
 __pycache__/
 captures/
+.DS_Store
