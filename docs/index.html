@@ -119,6 +119,7 @@
     <label><input type="checkbox" id="cepheids" checked> Cepheids</label>
     <label><input type="checkbox" id="clusters" checked> Star clusters</label>
     <label><input type="checkbox" id="exo" checked> Exoplanet hosts</label>
+    <label><input type="checkbox" id="systems" checked> Multi-star orbits</label>
     <label><input type="checkbox" id="sats" checked> Satellites</label>
     <label><input type="checkbox" id="starlink" checked> Starlink</label>
   </div>
@@ -891,6 +892,121 @@ $('tourRec').onclick = () => { recArmed = !recArmed; $('tourRec').textContent = 
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && tour) stopTour(); });
 canvas.addEventListener('pointerdown', () => { if (tour) stopTour(); });
 
+// ------------------------------------------------------------- multiple star systems
+// Companions orbit the catalogued primary on published Keplerian elements: a (AU), P (years), e,
+// T0 (year of periastron), i, Ω, ω (deg). Positions are solved for the current date.
+// Sources: Sixth Catalog of Orbits of Visual Binary Stars (USNO), Pourbaix+ 2016 (α Cen), Bond+ 2017 (Sirius),
+// Kervella+ 2017 (Proxima), Torres+ 2022 (Castor), Doyle+ 2011 (Kepler-16).
+const SYSTEMS = [
+  { host: 'Rigil Kentaurus', name: 'Alpha Centauri', note: 'Nearest star system. A (Sun-like) and B (orange dwarf) orbit each other every 79.9 years, 11 to 36 AU apart. Proxima, a red dwarf with at least two planets, circles both 13,000 AU out, once every ~550,000 years.',
+    comps: [{ name: 'α Centauri B', a: 23.5, P: 79.91, e: 0.524, T0: 1955.6, i: 79.3, O: 204.9, w: 231.7, color: '#ffc27a', rsun: 0.86, mass: '0.91 M☉, K1 V' },
+            { name: 'Proxima Centauri', a: 8700, P: 547000, e: 0.5, T0: 1900, i: 107.6, O: 126, w: 72, color: '#ff8a5a', rsun: 0.15, mass: '0.12 M☉, M5.5 V, 2+ planets' }] },
+  { host: 'Sirius', name: 'Sirius', note: 'The brightest star in the night sky with a white-dwarf companion, Sirius B: a burnt-out stellar core the size of Earth with the mass of the Sun. 50.1-year orbit, 8 to 31 AU.',
+    comps: [{ name: 'Sirius B', a: 19.8, P: 50.13, e: 0.592, T0: 1994.35, i: 136.3, O: 45.4, w: 149.2, color: '#dfe8ff', rsun: 0.008, mass: '1.02 M☉ white dwarf' }] },
+  { host: 'Procyon', name: 'Procyon', note: 'Procyon A with a faint white dwarf, Procyon B, on a 40.8-year orbit about 15 AU across.',
+    comps: [{ name: 'Procyon B', a: 15.0, P: 40.84, e: 0.40, T0: 1967.97, i: 31.1, O: 97.3, w: 92.2, color: '#dfe8ff', rsun: 0.012, mass: '0.59 M☉ white dwarf' }] },
+  { host: 'Castor', name: 'Castor', note: 'A sextuple system. Castor A and B, each itself a tight spectroscopic binary, orbit every 460 years about 100 AU apart; the red-dwarf pair Castor C (YY Gem) circles both ~1,000 AU out.',
+    comps: [{ name: 'Castor B (Ab+Bb pair)', a: 104, P: 460, e: 0.34, T0: 1960, i: 114.5, O: 41.3, w: 249.5, color: '#cad7ff', rsun: 1.6, mass: '2 stars, 2.4 M☉' },
+            { name: 'Castor C (YY Gem)', a: 1100, P: 14000, e: 0.3, T0: 1800, i: 90, O: 160, w: 0, color: '#ff9a6a', rsun: 0.6, mass: '2 red dwarfs, 0.6 M☉ each, eclipsing' }] },
+  { host: 'Mizar', name: 'Mizar', note: 'The first double star ever seen in a telescope (1617). Mizar A and B are each spectroscopic binaries, ~380 AU apart; Alcor, 74,000 AU away, is gravitationally bound too, making six stars.',
+    comps: [{ name: 'Mizar B (pair)', a: 380, P: 5000, e: 0.46, T0: 2000, i: 90, O: 153, w: 0, color: '#cad7ff', rsun: 1.5, mass: '2 stars, ~1.6 M☉ each' },
+            { name: 'Alcor (pair)', a: 74000, P: 750000, e: 0.3, T0: 1900, i: 90, O: 71, w: 0, color: '#e8eeff', rsun: 1.8, mass: 'A5 V + red dwarf' }] },
+  { host: 'Polaris', name: 'Polaris', note: 'The North Star is a triple: a Cepheid supergiant with a close companion Ab on a 29.6-year orbit (~18 AU) and a distant companion B about 2,400 AU out.',
+    comps: [{ name: 'Polaris Ab', a: 18.2, P: 29.59, e: 0.62, T0: 1987.7, i: 128, O: 191, w: 303, color: '#fff2d9', rsun: 1.0, mass: '1.3 M☉, F6 V' },
+            { name: 'Polaris B', a: 2400, P: 42000, e: 0.2, T0: 1900, i: 60, O: 0, w: 0, color: '#fff2d9', rsun: 1.4, mass: '1.4 M☉, F3 V' }] },
+  { host: 'Capella', name: 'Capella', note: 'Two yellow giants, each ~2.5 solar masses, orbiting every 104 days only 0.72 AU apart, closer than Earth is to the Sun. A pair of red dwarfs orbits 10,000 AU away.',
+    comps: [{ name: 'Capella Ab', a: 0.72, P: 0.2848, e: 0.0, T0: 2000.0, i: 137.2, O: 40.5, w: 0, color: '#ffe6a8', rsun: 8.8, mass: '2.48 M☉, G1 III' },
+            { name: 'Capella HL (red-dwarf pair)', a: 10000, P: 400000, e: 0.3, T0: 1900, i: 90, O: 141, w: 0, color: '#ff9a6a', rsun: 0.5, mass: '2 red dwarfs' }] },
+  { host: 'Algol', name: 'Algol', note: 'The Demon Star, an eclipsing triple: a hot B-type star and an orange subgiant eclipse each other every 2.87 days (0.062 AU apart), dimming Algol by a third; a third star orbits every 680 days.',
+    comps: [{ name: 'Algol Ab', a: 0.062, P: 0.00785, e: 0.0, T0: 2000.0, i: 98.6, O: 47.4, w: 0, color: '#ffc27a', rsun: 3.5, mass: '0.7 M☉, K0 IV, eclipsing' },
+            { name: 'Algol C', a: 2.69, P: 1.862, e: 0.23, T0: 2000.1, i: 83.7, O: 132.7, w: 310.0, color: '#fff2d9', rsun: 1.7, mass: '1.6 M☉, A7' }] },
+  { host: 'Albireo', name: 'Albireo', note: 'The famous gold-and-blue double at the head of Cygnus, 35 arcseconds apart. Gaia shows the two are probably not bound: an optical pair passing in the sky, ~4,000 AU apart in projection.',
+    comps: [{ name: 'Albireo B', a: 4400, P: 100000, e: 0.0, T0: 2000, i: 90, O: 54, w: 0, color: '#9ec5ff', rsun: 2.7, mass: '3.7 M☉, B8 V, blue' }] },
+  { host: '61 Cyg', name: '61 Cygni', note: 'The first star to have its distance measured (Bessel, 1838). Two orange dwarfs, 678-year orbit, 50 to 120 AU apart.',
+    comps: [{ name: '61 Cygni B', a: 85, P: 678, e: 0.40, T0: 1709, i: 51, O: 178, w: 149, color: '#ffb27a', rsun: 0.6, mass: '0.63 M☉, K7 V' }] },
+  { host: 'Eps-1 Lyr', name: 'Epsilon Lyrae', note: 'The Double Double. Two pairs ~10,000 AU apart; each pair is a tight binary of white stars (ε1: 1,200-year orbit; ε2: 585-year orbit).',
+    comps: [{ name: 'ε¹ Lyrae B', a: 116, P: 1200, e: 0.19, T0: 1900, i: 138, O: 20, w: 0, color: '#e8eeff', rsun: 1.5, mass: 'A4 V' },
+            { name: 'ε² Lyrae (pair)', a: 10500, P: 500000, e: 0.2, T0: 1900, i: 90, O: 173, w: 0, color: '#e8eeff', rsun: 1.6, mass: '2 × A-type, 585-yr orbit' }] },
+  { host: 'Xi UMa', name: 'Xi Ursae Majoris', note: 'The first binary star to have its orbit computed (Savary, 1827). Two Sun-like stars, 59.9-year orbit, 2 to 8 AU apart; each has a faint companion.',
+    comps: [{ name: 'Xi UMa B', a: 20.5, P: 59.84, e: 0.398, T0: 1935.2, i: 122.1, O: 101.6, w: 127.5, color: '#fff2d9', rsun: 1.0, mass: '0.9 M☉, G0 V' }] },
+  { host: 'Gam Vir', name: 'Gamma Virginis (Porrima)', note: 'Two nearly identical F-type stars on a highly eccentric 169-year orbit, swinging from 5 to 81 AU. They passed closest in 2005 and are now opening up again.',
+    comps: [{ name: 'Porrima B', a: 43.5, P: 168.9, e: 0.883, T0: 2005.4, i: 148.9, O: 36.2, w: 258.5, color: '#fff2d9', rsun: 1.4, mass: '1.4 M☉, F0 V' }] },
+  { host: '70 Oph', name: '70 Ophiuchi', note: 'A nearby pair of orange dwarfs, 88-year orbit, 11 to 35 AU apart, well seen in small telescopes.',
+    comps: [{ name: '70 Ophiuchi B', a: 23.2, P: 88.4, e: 0.50, T0: 1984.3, i: 121.2, O: 302.1, w: 14.0, color: '#ffb27a', rsun: 0.7, mass: '0.7 M☉, K4 V' }] },
+  { host: 'Kepler-16', name: 'Kepler-16', note: 'The first confirmed circumbinary planet: a Saturn-mass world orbiting two stars every 229 days, a real Tatooine. The stars orbit each other every 41 days, 0.22 AU apart.',
+    comps: [{ name: 'Kepler-16 B', a: 0.224, P: 0.1124, e: 0.159, T0: 2010.0, i: 90.3, O: 0, w: 263.5, color: '#ff8a5a', rsun: 0.23, mass: '0.20 M☉ red dwarf' },
+            { name: 'Kepler-16 b (planet)', a: 0.705, P: 0.627, e: 0.007, T0: 2010.1, i: 90.0, O: 0, w: 318, color: '#c9b48c', rsun: 0.075, mass: '0.33 Jupiter masses, circumbinary planet' }] },
+];
+let systemsBuilt = false, sysComps = [];
+function keplerPos(c, yr) {                         // Thiele-Innes style: relative position of companion in ecliptic AU
+  const M = 2 * Math.PI * (((yr - c.T0) / c.P) % 1);
+  let E = M; for (let k = 0; k < 30; k++) E = M + c.e * Math.sin(E);
+  const nu = 2 * Math.atan2(Math.sqrt(1 + c.e) * Math.sin(E / 2), Math.sqrt(1 - c.e) * Math.cos(E / 2));
+  const r = c.a * (1 - c.e * Math.cos(E)), d = Math.PI / 180;
+  const u = nu + c.w * d, O = c.O * d, i = c.i * d;
+  // equatorial sky frame: x toward north, y toward east, z toward observer; orbit plane rotated by i about node
+  const xN = r * (Math.cos(u) * Math.cos(O) - Math.sin(u) * Math.sin(O) * Math.cos(i));
+  const yE = r * (Math.cos(u) * Math.sin(O) + Math.sin(u) * Math.cos(O) * Math.cos(i));
+  const zT = r * Math.sin(u) * Math.sin(i);
+  return [xN, yE, zT];
+}
+function skyBasis(h) {                              // unit vectors east, north, toward-observer at the host (ecliptic coords)
+  const r = Math.hypot(h.x, h.y, h.z), to = [h.x / r, h.y / r, h.z / r];       // Sun -> star; observer is at -to
+  const e = 23.4392911 * Math.PI / 180, polN = [0, -Math.sin(e), Math.cos(e)];  // equatorial north pole in ecliptic coords
+  let east = cross(polN, to); const L = Math.hypot(...east) || 1; east = east.map(v => v / L);
+  const north = cross(to, east);
+  return { east, north, toward: to.map(v => -v) };
+}
+function buildSystems() {
+  if (systemsBuilt) return; systemsBuilt = true;
+  for (const S of SYSTEMS) {
+    const h = nodes.find(n => (n.kind === 'star' || n.kind === 'exohost') && n.name === S.host); if (!h) continue;
+    h.system = S; h.note = (h.note ? h.note + ' ' : '') + S.note;
+    S.hostNode = h; S.basis = skyBasis(h);
+    S.comps.forEach((c, k) => {
+      const n = { id: `${h.id}-c${k}`, name: c.name, kind: 'companion', x: h.x, y: h.y, z: h.z, color: c.color, comp: c, host: h, system: S,
+                  mag: null, dist_pc: h.dist_pc, source: 'published orbital elements (ORB6, Pourbaix+ 2016, Bond+ 2017, Torres+ 2022, Doyle+ 2011)',
+                  note: `${c.mass}. Orbits ${h.name} every ${c.P < 1 ? Math.round(c.P * 365.25) + ' days' : c.P.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' years'}, semi-major axis ${c.a < 1 ? c.a.toFixed(3) : c.a.toLocaleString()} AU, eccentricity ${c.e}. ${S.note}` };
+      sysComps.push(n); byId[n.id] = n;
+    });
+  }
+}
+function updateCompanions(now) {
+  const yr = 2000 + (now - Date.UTC(2000, 0, 1, 12)) / (365.25 * 86400000);
+  for (const n of sysComps) {
+    const [xN, yE, zT] = keplerPos(n.comp, yr), B = n.system.basis, h = n.host;
+    n.x = h.x + B.north[0] * xN + B.east[0] * yE + B.toward[0] * zT;
+    n.y = h.y + B.north[1] * xN + B.east[1] * yE + B.toward[1] * zT;
+    n.z = h.z + B.north[2] * xN + B.east[2] * yE + B.toward[2] * zT;
+  }
+}
+function drawSystems() {
+  if (!systemsBuilt || !$('systems').checked) return 0;
+  updateCompanions(Date.now());
+  let drawnC = 0;
+  for (const n of sysComps) {
+    const c = n.comp, h = n.host, aPx = c.a * scale;
+    if (aPx < 4 || aPx > 1e6) continue;
+    const [hx, hy] = proj(h); if (hx < -aPx * 2 || hy < -aPx * 2 || hx > W + aPx * 2 || hy > H + aPx * 2) continue;
+    // orbit path: sample one full orbit
+    const B = n.system.basis; ctx.strokeStyle = c.color; ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.beginPath();
+    for (let k = 0; k <= 96; k++) {
+      const [xN, yE, zT] = keplerPos(c, c.T0 + c.P * k / 96);
+      const [sx, sy] = proj3(h.x + B.north[0] * xN + B.east[0] * yE + B.toward[0] * zT, h.y + B.north[1] * xN + B.east[1] * yE + B.toward[1] * zT, h.z + B.north[2] * xN + B.east[2] * yE + B.toward[2] * zT);
+      k ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    const [sx, sy] = proj(n), r = Math.max(2.5, c.rsun * 0.00465 * scale);
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r); g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, c.color); g.addColorStop(1, c.color);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    screenPos.push([sx, sy, n, r]); drawnC++;
+    ctx.font = '12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = c.color; ctx.fillText(c.name, sx + r + 4, sy);
+  }
+  if (drawnC) { clearTimeout(drawSystems.timer); drawSystems.timer = setTimeout(requestDraw, 2000); }
+  return drawnC;
+}
+
 function draw() {
   if (!Number.isFinite(scale) || scale <= 0) scale = 60;   // never let a bad zoom poison every frame
   updateCamera();
@@ -1029,6 +1145,7 @@ function draw() {
   }
   drawn.sort((a, b) => a[4] - b[4]);
   for (const [sx, sy, n, r] of drawn) { drawMarker(n, sx, sy, r); screenPos.push([sx, sy, n, r]); labelCands.push([sx, sy, n, r]); }
+  drawSystems();
   const satsDrawn = drawSatellites(byId.earth ? (6371 / AU_KM) * scale : 0);
   if (drawn.some(([, , n, r]) => SOLAR.has(n.kind) && r > 6)) { clearTimeout(draw.spinTimer); draw.spinTimer = setTimeout(requestDraw, 1000); }
   if (sat && satsDrawn) {
@@ -1209,9 +1326,10 @@ function fmtYears(y) {
 function select(n) {
   selected = n; $('info').style.display = 'block'; $('iName').textContent = n.name;
   if (n.kind === 'satellite') satRefresh(n, Date.now());
+  if (n.kind === 'companion') updateCompanions(Date.now());
   const c = byId[centerId] || { x: 0, y: 0, z: 0, name: 'center' };
   const dCenter = Math.hypot(n.x - c.x, n.y - c.y, n.z - c.z), dSun = Math.hypot(n.x, n.y, n.z);
-  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite', globular: 'globular cluster', opencluster: 'open cluster', abell: 'galaxy cluster', exohost: 'star with known planets' }[n.kind] || n.kind;
+  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite', globular: 'globular cluster', opencluster: 'open cluster', abell: 'galaxy cluster', exohost: 'star with known planets', companion: 'companion star' }[n.kind] || n.kind;
   const catalog = n.kind === 'galaxy' && n.note == null;
   const rows = [], sect = t => rows.push([null, t]);
   const f = FACTS[n.id];
@@ -1303,7 +1421,8 @@ canvas.addEventListener('pointerdown', () => $('controls').classList.remove('ope
 $('center').onchange = e => setCenter(e.target.value);
 $('search').addEventListener('change', e => {
   const q = e.target.value.trim().toLowerCase(); if (!q) return;
-  const n = nodes.find(n => n.name.toLowerCase() === q) || nodes.find(n => n.name.toLowerCase().includes(q));
+  const S = SYSTEMS.find(S => S.name.toLowerCase().includes(q));
+  const n = (S && S.hostNode) || nodes.find(n => n.name.toLowerCase() === q) || nodes.find(n => n.name.toLowerCase().includes(q));
   if (n) {
     select(n); setCenter(n.id);
     if (!SOLAR.has(n.kind)) scale = Math.min(scale, W / (Math.max(20, n.dist_pc * 0.5) * AU_PER_PC));
@@ -1314,7 +1433,7 @@ document.querySelectorAll('.presets button[data-au]').forEach(b => b.onclick = (
 document.querySelectorAll('.angles button[data-tilt]').forEach(b => b.onclick = () => setAngle(+b.dataset.tilt));
 $('spin').onclick = () => { spinning = !spinning; $('spin').textContent = spinning ? 'Stop spin' : 'Auto-spin'; if (spinning) spinFrame(); };
 function spinFrame() { if (!spinning) return; R = mul(R, rotZ(0.004)); draw(); requestAnimationFrame(spinFrame); }
-['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids', 'sats', 'starlink', 'clusters', 'exo'].forEach(id => $(id).onchange = draw);
+['orbits', 'rings', 'starLabels', 'drops', 'exag', 'galaxy', 'gaia', 'density', 'model', 'cepheids', 'sats', 'starlink', 'clusters', 'exo', 'systems'].forEach(id => $(id).onchange = draw);
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === '+' || e.key === '=') zoom(1.4);
@@ -1352,14 +1471,16 @@ async function load() {
   const solar = nodes.filter(n => SOLAR.has(n.kind));
   const deep = nodes.filter(isLandmark).sort((a, b) => a.dist_pc - b.dist_pc);
   const stars = nodes.filter(n => n.kind === 'star' && n.mag <= 2.5).sort((a, b) => a.name.localeCompare(b.name));
+  const multi = SYSTEMS.map(S => nodes.find(n => (n.kind === 'star' || n.kind === 'exohost') && n.name === S.host)).filter(Boolean).map(h => `<option value="${h.id}">${SYSTEMS.find(S => S.host === h.name).name}</option>`).join('');
   $('center').innerHTML = `<optgroup label="Solar system">${solar.map(opt).join('')}</optgroup>` +
+    `<optgroup label="Multiple star systems">${multi}</optgroup>` +
     `<optgroup label="Black holes, clusters, galaxies">${deep.map(opt).join('')}</optgroup>` +
     `<optgroup label="Bright stars">${stars.map(opt).join('')}</optgroup>`;
   $('center').value = byId[centerId] ? centerId : 'sun';
   $('names').innerHTML = nodes.filter(n => !(n.kind === 'galaxy' && n.note == null) || (n.mag ?? 99) <= 10)
     .map(n => `<option value="${n.name}">`).join('');
   if (selected) selected = byId[selected.id] || null;
-  buildClouds();
+  buildClouds(); buildSystems();
   if (!$('epoch').value && meta.epoch) $('epoch').value = meta.epoch.replace(' ', 'T');
   showStatus(d.status); draw();
   return d.status;
