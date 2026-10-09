@@ -45,6 +45,7 @@ data, builds the catalogs, and serves them locally. Nothing runs on a server for
 | Galaxies, measured distances | 869 | Local Volume catalog, Karachentsev+ 2013 | within 36 million ly |
 | Galaxies, redshift distances | 43,280 | 2MASS Redshift Survey, Huchra+ 2012 | out to ~1 billion ly, H0 = 70 |
 | Abell galaxy clusters | 568 | Abell/ACO 1989 | those with measured redshifts, sized by richness |
+| Visual binary orbits | 2,912 | Sixth Catalog of Orbits of Visual Binary Stars (USNO) | every resolved pair with a computed orbit whose primary is in HYG; companions on their Keplerian orbits for today, with the pair's total mass from Kepler's third law |
 | Multiple star systems | 15 systems, 23 companions | ORB6, Pourbaix+ 2016, Bond+ 2017, Torres+ 2022, Doyle+ 2011 | Alpha Centauri, Sirius, Procyon, Castor, Mizar, Polaris, Capella, Algol, Albireo, 61 Cyg, ε Lyr, ξ UMa, Porrima, 70 Oph, Kepler-16; companions placed on their real Keplerian orbits for today's date |
 | Landmarks | 29 | curated | black holes (Sgr A*, Gaia BH1–3, Cygnus X-1, V404 Cyg, …), nebulae, the Magellanic Clouds, Andromeda, Virgo, Coma, Perseus, the Great Attractor, Shapley, the Sloan Great Wall, the quasar 3C 273 |
 | Reference rings | | | Milky Way bulge and disk edge, the Sun's galactic orbit, the edge of the observable universe at 46.5 billion ly |
@@ -131,7 +132,7 @@ ffmpeg -framerate 30 -i captures/frames-out/%05d.jpg -vf scale=1920:1080 -c:v li
 - `GET  /api/bodies` – all nodes, edges and metadata
 - `GET  /api/status` – background job status
 - `POST /api/refresh?what=planets&epoch=YYYY-MM-DD HH:MM` – re-fetch planets from Horizons
-- `POST /api/refresh?what=stars|galaxies|cepheids|extras|landmarks` – re-download a catalog
+- `POST /api/refresh?what=stars|galaxies|cepheids|extras|binaries|landmarks` – re-download a catalog
 - `POST /api/recording?name=…` / `POST /api/frame?dir=…&i=…` – used by the tour recorder
 
 Environment knobs: `STARNAV_MAG_LIMIT` and `STARNAV_NEAR_PC` (star catalog cut), `STARNAV_LAN=1`,

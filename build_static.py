@@ -42,6 +42,7 @@ for r in conn.execute("SELECT * FROM nodes WHERE kind NOT IN ('sun','planet','mo
         if r[k] is not None: n[k] = sig(r[k])
     for k in ("color", "spect", "con", "note"):
         if r[k]: n[k] = r[k]
+    if r["orbit"]: n["orbit"] = json.loads(r["orbit"])
     nodes.append(n)
 edges = [dict(r) for r in conn.execute("SELECT src,dst,rel FROM edges WHERE src NOT IN "
                                        "(SELECT id FROM nodes WHERE kind IN ('planet','moon','dwarf'))")]

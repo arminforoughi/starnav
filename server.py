@@ -13,6 +13,7 @@ import io
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -158,6 +159,8 @@ def init_db():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(nodes)")}
         if "note" not in cols:                       # migrate databases created before landmarks
             conn.execute("ALTER TABLE nodes ADD COLUMN note TEXT")
+        if "orbit" not in cols:                      # JSON orbital elements for binary companions
+            conn.execute("ALTER TABLE nodes ADD COLUMN orbit TEXT")
 
 
 def set_meta(key, value):
@@ -422,6 +425,93 @@ def refresh_extras():
     set_status(f"Extra catalogs loaded: {counts}" + (f"; errors: {errors}" if errors else ""), False)
 
 
+ORB6_URL = "https://www.astro.gsu.edu/wds/orb6/orb6orbits.txt"
+
+
+def hyg_by_hip():
+    """Hipparcos number -> (hyg id, name, dist pc, spect) from the cached HYG catalog."""
+    req = urllib.request.Request(HYG_URL, headers={"User-Agent": "starnav/1.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = resp.read()
+    text = io.TextIOWrapper(gzip.GzipFile(fileobj=io.BytesIO(data)), encoding="utf-8")
+    out = {}
+    for r in csv.DictReader(text):
+        if r.get("hip"):
+            out[int(float(r["hip"]))] = (f"hyg-{r['id']}", star_name(r), fnum(r.get("dist")), r.get("spect") or "", fnum(r.get("mag")))
+    return out
+
+
+def refresh_binaries():
+    """Sixth Catalog of Orbits of Visual Binary Stars (USNO/GSU mirror): every resolved pair with a computed orbit."""
+    set_status("Downloading the Sixth Orbit Catalog (ORB6) ...", True)
+    req = urllib.request.Request(ORB6_URL, headers={"User-Agent": "starnav/1.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        lines = resp.read().decode("latin-1").splitlines()
+    hdr = next(l for l in lines if l.startswith("RA,Dec"))
+    c_hip, c_v1 = hdr.index("HIP..."), hdr.index("V1.11*")
+    tok = re.compile(r"[-+]?\d+\.\d*|[-+]?\d+|\.|[a-zA-Z]")
+    set_status("Matching ORB6 pairs to Hipparcos stars ...", True)
+    hip = hyg_by_hip()
+    rows, edges, per_hip, nmatch = [], [], {}, 0
+    for l in lines[8:]:
+        if len(l) < c_v1 + 60: continue
+        try:
+            h = int(l[c_hip:c_hip + 6].strip())
+        except ValueError:
+            continue
+        if h not in hip: continue
+        hid, hname, dist, spect, hmag = hip[h]
+        if not dist or dist <= 0 or dist >= 100000: continue
+        # numeric section: V1 V2 P Pu eP a au ea i ei O eO T Tu eT e ee w ew ...   ('.' = missing)
+        t = tok.findall(l[c_v1:c_v1 + 175])
+        num = lambda x: None if x in (".", None) else (float(x) if re.match(r"[-+]?\d", x) else None)
+        try:
+            k = 0
+            v1 = num(t[k]); k += 1
+            v2 = num(t[k]); k += 1
+            P = num(t[k]); Pu = t[k + 1]; k += 2; k += 1                     # eP
+            a = num(t[k]); au = t[k + 1]; k += 2; k += 1                     # ea
+            inc = num(t[k]); k += 2                                           # i, ei
+            O = num(t[k]); k += 1
+            if k < len(t) and t[k].isalpha(): k += 1                         # node flag (e.g. '*')
+            k += 1                                                            # eO
+            T = num(t[k]); Tu = t[k + 1]; k += 2; k += 1                     # eT
+            e = num(t[k]); k += 2                                             # e, ee
+            w = num(t[k])
+        except (IndexError, TypeError):
+            continue
+        if None in (P, a, inc, O, T, e, w) or Pu not in "ydc" or au not in "am" or Tu not in "ydc": continue
+        nmatch += 1
+        P_yr = P if Pu == "y" else P / 365.25 if Pu == "d" else P * 100
+        T_yr = T if Tu == "y" else (2000 + (T + 2400000 - 2451545.0) / 365.25) if Tu == "d" else T
+        a_arc = a / 1000 if au == "m" else a
+        a_au = a_arc * dist
+        if a_au <= 0 or a_au > 50000: continue
+        mass = a_au ** 3 / P_yr ** 2
+        if not (0.05 < mass < 200): continue        # implausible: bad distance or orbit; skip
+        idx = per_hip.get(h, 0); per_hip[h] = idx + 1
+        suffix = "" if idx == 0 else " " + "CDEF"[min(idx - 1, 3)]
+        pretty = (lambda x: f"{x:.3g}" if x < 100 else f"{x:,.0f}")
+        note = (f"Visual binary companion of {hname}. Period {pretty(P_yr) + ' years' if P_yr >= 1 else f'{P_yr*365.25:.1f} days'}, "
+                f"semi-major axis {pretty(a_au)} AU ({a_arc:.3f}\"), eccentricity {e:.2f}. Total mass of the pair from Kepler's third law: "
+                f"{mass:.2g} solar masses." + (f" Brightness V = {v1:.2f} and {v2:.2f}." if v1 is not None and v2 is not None else "") +
+                (f" Primary spectral type {spect}." if spect else ""))
+        orbit = json.dumps({"a": round(a_au, 4), "P": round(P_yr, 5), "e": e, "T0": round(T_yr, 3), "i": inc, "O": O, "w": w, "mass": round(mass, 3), "v2": v2, "v1": v1})
+        rows.append((f"orb-{h}{'-' + str(idx) if idx else ''}", f"{hname} {'B' if idx == 0 else 'CDEF'[min(idx - 1, 3)]}", "binary", 0, 0, 0, v2, "#cfe0ff", None, dist, spect, None,
+                     "Sixth Catalog of Orbits of Visual Binary Stars (USNO; GSU mirror)", note, orbit))
+        edges.append((rows[-1][0], hid, "orbits"))
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as conn:
+        conn.execute("DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE kind='binary')")
+        conn.execute("DELETE FROM nodes WHERE kind='binary'")
+        conn.executemany("INSERT OR REPLACE INTO nodes(id,name,kind,x,y,z,mag,color,radius_km,dist_pc,"
+                         "spect,con,source,note,orbit,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         [r + (now,) for r in rows])
+        conn.executemany("INSERT OR IGNORE INTO edges(src,dst,rel) VALUES (?,?,?)", edges)
+    set_meta("binaries_updated", now)
+    set_status(f"Binaries loaded: {len(rows)} orbits ({nmatch} ORB6 pairs matched to Hipparcos stars).", False)
+
+
 def refresh_landmarks():
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with db() as conn:
@@ -621,6 +711,11 @@ def seed_if_empty():
                 errors.append(f"cepheids: {e}")
         if count("kind IN ('globular','opencluster','abell','exohost')") == 0:
             refresh_extras()
+        if count("kind = 'binary'") == 0:
+            try:
+                refresh_binaries()
+            except Exception as e:
+                errors.append(f"binaries: {e}")
         set_status("Error: " + "; ".join(errors) if errors else "Ready.", False)
     run_job(job)
 
@@ -664,7 +759,7 @@ class Handler(SimpleHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         if url.path == "/api/bodies":
             with db() as conn:
-                nodes = [{k: v for k, v in dict(r).items() if v is not None}
+                nodes = [{k: (json.loads(v) if k == "orbit" else v) for k, v in dict(r).items() if v is not None}
                          for r in conn.execute("SELECT * FROM nodes")]
                 edges = [dict(r) for r in conn.execute("SELECT * FROM edges")]
             return self.send_json({"nodes": nodes, "edges": edges, "meta": get_meta(),
@@ -693,6 +788,8 @@ class Handler(SimpleHTTPRequestHandler):
                 started = run_job(refresh_cepheids)
             elif what == "extras":
                 started = run_job(refresh_extras)
+            elif what == "binaries":
+                started = run_job(refresh_binaries)
             else:
                 started = run_job(refresh_planets, epoch)
             return self.send_json({"ok": started, "status": dict(_state)},

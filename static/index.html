@@ -456,7 +456,7 @@ function buildClouds() {
     s => Math.max(1.2, Math.min(6, 4.2 - s.mag * 0.75)), s => s.mag > 6.5 ? Math.max(0.35, 1 - (s.mag - 6.5) * 0.12) : 1, 4, 7);
   gals = makeCloud(nodes.filter(n => n.kind === 'galaxy' && n.note == null),
     s => Math.max(0.8, Math.min(3.5, 4 - (s.mag ?? 12) * 0.28)), () => 1, 11, 13);
-  bigNodes = nodes.filter(n => n.kind !== 'star' && !(n.kind === 'galaxy' && n.note == null));
+  bigNodes = nodes.filter(n => n.kind !== 'star' && n.kind !== 'binary' && !(n.kind === 'galaxy' && n.note == null));
   stars.rad = new Float32Array(stars.n);
   stars.nodes.forEach((n, i) => { stars.rad[i] = starRadiusAU(n); });
 }
@@ -958,6 +958,19 @@ function skyBasis(h) {                              // unit vectors east, north,
 }
 function buildSystems() {
   if (systemsBuilt) return; systemsBuilt = true;
+  // catalog binaries (ORB6): one companion node per orbit, host via its 'orbits' edge
+  const hostOf = {}; for (const e of edges) if (e.rel === 'orbits' && e.src.startsWith('orb-')) hostOf[e.src] = e.dst;
+  const curated = new Set(SYSTEMS.map(S => S.host));
+  const basisCache = {};
+  for (const n of nodes) {
+    if (n.kind !== 'binary' || !n.orbit) continue;
+    const h = byId[hostOf[n.id]]; if (!h || curated.has(h.name)) continue;
+    const o = n.orbit;
+    n.comp = { name: n.name, a: o.a, P: o.P, e: o.e, T0: o.T0, i: o.i, O: o.O, w: o.w, color: n.color, rsun: o.v2 != null ? Math.max(0.3, 1.6 - (o.v2 - (o.v1 ?? o.v2)) * 0.15) : 0.8, mass: `pair ${o.mass} M☉` };
+    n.host = h; n.system = { basis: basisCache[h.id] || (basisCache[h.id] = skyBasis(h)), name: h.name, note: '' };
+    h.binaryMass = o.mass; h.note = (h.note ? h.note + ' ' : '') + `Visual binary (ORB6 orbit): companion ${n.name} every ${o.P >= 1 ? o.P.toPrecision(3) + ' years' : (o.P * 365.25).toFixed(1) + ' days'}, ${o.a.toPrecision(3)} AU; total mass ${o.mass.toPrecision(2)} solar masses.`;
+    sysComps.push(n);
+  }
   for (const S of SYSTEMS) {
     const h = nodes.find(n => (n.kind === 'star' || n.kind === 'exohost') && n.name === S.host); if (!h) continue;
     h.system = S; h.note = (h.note ? h.note + ' ' : '') + S.note;
@@ -1000,7 +1013,7 @@ function drawSystems() {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(sx, sy, r * 2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     screenPos.push([sx, sy, n, r]); drawnC++;
-    ctx.font = '12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = c.color; ctx.fillText(c.name, sx + r + 4, sy);
+    if (n.kind === 'companion' || aPx > 14 || n === selected || n === hover) { ctx.font = '12px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = c.color; ctx.fillText(c.name, sx + r + 4, sy); }
   }
   if (drawnC) { clearTimeout(drawSystems.timer); drawSystems.timer = setTimeout(requestDraw, 2000); }
   return drawnC;
@@ -1325,16 +1338,24 @@ function fmtYears(y) {
 function select(n) {
   selected = n; $('info').style.display = 'block'; $('iName').textContent = n.name;
   if (n.kind === 'satellite') satRefresh(n, Date.now());
-  if (n.kind === 'companion') updateCompanions(Date.now());
+  if (n.kind === 'companion' || n.kind === 'binary') updateCompanions(Date.now());
   const c = byId[centerId] || { x: 0, y: 0, z: 0, name: 'center' };
   const dCenter = Math.hypot(n.x - c.x, n.y - c.y, n.z - c.z), dSun = Math.hypot(n.x, n.y, n.z);
-  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite', globular: 'globular cluster', opencluster: 'open cluster', abell: 'galaxy cluster', exohost: 'star with known planets', companion: 'companion star' }[n.kind] || n.kind;
+  const kindName = { blackhole: 'black hole', gcluster: 'galaxy cluster', dwarf: 'dwarf planet', sun: 'star', cepheid: 'Cepheid variable star', satellite: 'satellite', globular: 'globular cluster', opencluster: 'open cluster', abell: 'galaxy cluster', exohost: 'star with known planets', companion: 'companion star', binary: 'binary companion' }[n.kind] || n.kind;
   const catalog = n.kind === 'galaxy' && n.note == null;
   const rows = [], sect = t => rows.push([null, t]);
   const f = FACTS[n.id];
   $('iSub').textContent = kindName + (n.con ? ` in ${n.con}` : '') + (n.source ? ` · ${n.source.split(';')[0].split(' (')[0]}` : '');
   $('iNote').textContent = n.note || (f ? f.blurb : '');
 
+  if (n.kind === 'binary' && n.orbit) {
+    sect('Orbit');
+    const o = n.orbit;
+    rows.push(['Period', o.P >= 1 ? o.P.toPrecision(4) + ' years' : (o.P * 365.25).toFixed(2) + ' days'], ['Semi-major axis', o.a.toPrecision(3) + ' AU'],
+              ['Eccentricity', o.e.toFixed(3)], ['Inclination', o.i.toFixed(1) + '°'], ['Mass of the pair', o.mass.toPrecision(2) + ' × Sun']);
+    if (o.v1 != null && o.v2 != null) rows.push(['Brightness A / B', `mag ${o.v1.toFixed(2)} / ${o.v2.toFixed(2)}`]);
+    if (n.spect) rows.push(['Primary type', n.spect]);
+  }
   if (n.kind === 'satellite') {
     satRefresh(n, Date.now());
     if (sat && sat.worker) sat.worker.postMessage({ track: n.satIndex, t: Date.now(), periodMs: n.period_min * 60000, steps: 120 });
@@ -1369,6 +1390,7 @@ function select(n) {
       rows.push(['Absolute magnitude', M.toFixed(2)]);
       rows.push(['Luminosity', (L >= 100 ? Math.round(L).toLocaleString() : L.toPrecision(3)) + ' × Sun']);
     }
+    if (n.binaryMass) rows.push(['Mass of the pair', n.binaryMass.toPrecision(2) + ' × Sun (Kepler\u2019s 3rd law)']);
     const rad = starRadiusAU(n);
     if (rad) rows.push(['Radius (estimated)', (rad / 0.00465 >= 10 ? Math.round(rad / 0.00465) : (rad / 0.00465).toFixed(2)) + ' × Sun' + (rad > 0.05 ? `, ${rad.toFixed(2)} AU` : '')]);
     if (n.spect) {
